@@ -5,9 +5,9 @@ import 'package:video_player/video_player.dart';
 import 'dart:io';
 import 'dart:ui'; // Needed for ImageFilter
 import 'services/socket_service.dart';
-import 'services/background_manager.dart'; // Ensure this is imported
+import 'services/background_manager.dart'; 
 import 'widgets/spatial_renderer.dart';
-import 'widgets/glass_box.dart'; // <--- NEW WIDGET
+import 'widgets/glass_box.dart'; 
 import 'screens/calibration_screen.dart';
 
 void main() async {
@@ -30,7 +30,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'SpatialFlow',
       theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: Colors.black, // Background handled by Container
+        scaffoldBackgroundColor: Colors.black, 
         primaryColor: const Color(0xFF00E676),
       ),
       home: const DashboardScreen(),
@@ -95,9 +95,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
 
-    // REMOVED THE BLOCKING LOADER
-    // We now let the UI render even while scanning.
-    // The "Status Card" will show "Scanning..." automatically.
+    // --- FIX 1: REMOVED THE BLOCKING LOADER ---
+    // The app will now render the UI immediately, even if scanning.
 
     return SpatialGestureLayer(
       extraData: _fileType == 'video' && _senderVideoController != null 
@@ -107,10 +106,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => _dragPosition += details.delta);
       },
       child: Scaffold(
-        extendBodyBehindAppBar: true, // Allow background to go behind AppBar
+        extendBodyBehindAppBar: true, 
         appBar: AppBar(
           title: const Text("SpatialFlow", style: TextStyle(fontWeight: FontWeight.w300, letterSpacing: 2)),
-          backgroundColor: Colors.transparent, // Glassy AppBar
+          backgroundColor: Colors.transparent, 
           elevation: 0,
           flexibleSpace: ClipRect(
             child: BackdropFilter(
@@ -138,6 +137,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // FIX 2: Pass the service correctly
                     _buildGlassStatusCard(socketService),
                     const SizedBox(height: 30),
                     const Text("NEURAL MESH", style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 12)),
@@ -145,7 +145,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     
                     Expanded(
                       child: socketService.activeDevices.isEmpty
-                          ? const Center(child: Text("Scanning Frequencies...", style: TextStyle(color: Colors.white30)))
+                          // Better empty state text
+                          ? const Center(child: Text("Searching for Neural Core...", style: TextStyle(color: Colors.white30)))
                           : ListView.builder(
                               itemCount: socketService.activeDevices.length,
                               itemBuilder: (context, index) {
@@ -187,9 +188,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       child: Stack(
         children: [
-          // Ambient Orb 1
           Positioned(top: -50, left: -50, child: _buildOrb(Colors.purpleAccent)),
-          // Ambient Orb 2
           Positioned(bottom: 100, right: -50, child: _buildOrb(Colors.blueAccent)),
         ],
       ),
@@ -207,7 +206,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Widget _buildGlassStatusCard(SocketService service) {
+  // --- FIX 3: THIS METHOD WAS CAUSING THE ERROR ---
+  Widget _buildGlassStatusCard(SocketService service) { 
+    // We use 'service' here because that matches the argument name above ^
     return GlassBox(
       borderGlow: service.isConferenceMode,
       child: Column(
@@ -221,12 +222,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   const Text("NEURAL CORE", style: TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 1.5)),
                   const SizedBox(height: 5),
+                  // UPDATED TEXT LOGIC (Using 'service' not 'socketService')
                   Text(
-                    socketService.isConnected 
+                    service.isConnected 
                         ? "ONLINE" 
-                        : (socketService.isScanning ? "SCANNING..." : "OFFLINE"), 
+                        : (service.isScanning ? "SCANNING..." : "OFFLINE"), 
                     style: TextStyle(
-                      color: socketService.isConnected ? const Color(0xFF00E676) : Colors.amber, 
+                      color: service.isConnected ? const Color(0xFF00E676) : Colors.amber, 
                       fontWeight: FontWeight.bold, 
                       fontSize: 16
                     )
@@ -310,7 +312,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 // --- KEEP THE EXISTING SPATIAL GESTURE LAYER CLASS BELOW ---
-// (Copy the SpatialGestureLayer class from the previous code block here)
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -351,5 +352,4 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
       child: widget.child,
     );
   }
-
 }
