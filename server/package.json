@@ -1,0 +1,18 @@
+{
+  "name": "spatialflow-server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "bin": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ip": "^1.1.8",
+    "socket.io": "^4.7.2"
+  }
+}
