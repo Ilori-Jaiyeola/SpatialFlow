@@ -1,13 +1,13 @@
-name: Repair Android Structure
+name: Add Windows Support
 
 on: 
-  workflow_dispatch: # This allows you to click a button to run it
+  workflow_dispatch: # Button trigger
 
 permissions:
-  contents: write # Gives the robot permission to fix your code
+  contents: write
 
 jobs:
-  fix-project:
+  fix-windows:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -17,19 +17,20 @@ jobs:
         with:
           channel: 'stable'
           
-      - name: Regenerate Android Folder
+      - name: Generate Windows Files
         working-directory: ./spatial_flow_client
         run: |
-          # 1. Remove the old/broken android folder
-          rm -rf android
+          # 1. Enable Windows configuration in this environment
+          flutter config --enable-windows-desktop
           
-          # 2. Force Flutter to recreate standard android files
-          flutter create --platforms=android .
+          # 2. Generate ONLY the missing Windows files
+          flutter create --platforms=windows .
           
       - name: Commit and Push Changes
         run: |
           git config --global user.name 'Repair Bot'
           git config --global user.email 'bot@noreply.github.com'
-          git add spatial_flow_client/android/
-          git commit -m "FIX: Regenerated Android folder structure"
+          # Only add the new windows folder
+          git add spatial_flow_client/windows/
+          git commit -m "FIX: Generated Windows desktop files"
           git push
