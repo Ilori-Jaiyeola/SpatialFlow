@@ -95,13 +95,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
 
-    // If Scanning, show simple loader
-    if (socketService.isScanning) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Color(0xFF00E676))),
-      );
-    }
+    // REMOVED THE BLOCKING LOADER
+    // We now let the UI render even while scanning.
+    // The "Status Card" will show "Scanning..." automatically.
 
     return SpatialGestureLayer(
       extraData: _fileType == 'video' && _senderVideoController != null 
@@ -225,8 +221,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   const Text("NEURAL CORE", style: TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 1.5)),
                   const SizedBox(height: 5),
-                  Text(service.isConnected ? "ONLINE" : "OFFLINE", 
-                       style: TextStyle(color: service.isConnected ? const Color(0xFF00E676) : Colors.redAccent, fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text(
+                    socketService.isConnected 
+                        ? "ONLINE" 
+                        : (socketService.isScanning ? "SCANNING..." : "OFFLINE"), 
+                    style: TextStyle(
+                      color: socketService.isConnected ? const Color(0xFF00E676) : Colors.amber, 
+                      fontWeight: FontWeight.bold, 
+                      fontSize: 16
+                    )
+                  ),
                 ],
               )
             ],
@@ -347,4 +351,5 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
       child: widget.child,
     );
   }
+
 }
