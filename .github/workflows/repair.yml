@@ -1,0 +1,35 @@
+name: Repair Android Structure
+
+on: 
+  workflow_dispatch: # This allows you to click a button to run it
+
+permissions:
+  contents: write # Gives the robot permission to fix your code
+
+jobs:
+  fix-project:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Regenerate Android Folder
+        working-directory: ./spatial_flow_client
+        run: |
+          # 1. Remove the old/broken android folder
+          rm -rf android
+          
+          # 2. Force Flutter to recreate standard android files
+          flutter create --platforms=android .
+          
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name 'Repair Bot'
+          git config --global user.email 'bot@noreply.github.com'
+          git add spatial_flow_client/android/
+          git commit -m "FIX: Regenerated Android folder structure"
+          git push
