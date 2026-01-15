@@ -67,7 +67,7 @@ jobs:
         with:
           name: SpatialFlow-Client-Windows
           # We upload the whole Release folder because it contains vital DLLs
-          path: spatial_flow_client/build/windows/runner/Release/
+          path: spatial_flow_client/build/windows/x64/runner/Release/
 
   # ---------------------------------------------------
   # JOB 3: BUILD THE FLUTTER CLIENT (ANDROID APK)
