@@ -1,0 +1,105 @@
+name: Build SpatialFlow
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  workflow_dispatch: # Allows you to manually trigger the build button
+
+jobs:
+  # ---------------------------------------------------
+  # JOB 1: BUILD THE NODE.JS SERVER (SPATIAL CORE)
+  # ---------------------------------------------------
+  build-server:
+    name: Build Server (Windows EXE)
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - name: Install Dependencies
+        working-directory: ./server
+        run: npm install
+
+      - name: Build Executable
+        working-directory: ./server
+        # Using npx to run pkg without global installation
+        run: npx pkg . --targets node18-win-x64 --output spatial-core.exe
+
+      - name: Upload Server Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpatialFlow-Server
+          path: server/spatial-core.exe
+
+  # ---------------------------------------------------
+  # JOB 2: BUILD THE FLUTTER CLIENT (WINDOWS DESKTOP)
+  # ---------------------------------------------------
+  build-windows-client:
+    name: Build Client (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          
+      - name: Enable Desktop Support
+        run: flutter config --enable-windows-desktop
+
+      - name: Install Dependencies
+        working-directory: ./spatial_flow_client
+        run: flutter pub get
+
+      - name: Build Windows App
+        working-directory: ./spatial_flow_client
+        run: flutter build windows --release
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpatialFlow-Client-Windows
+          # We upload the whole Release folder because it contains vital DLLs
+          path: spatial_flow_client/build/windows/runner/Release/
+
+  # ---------------------------------------------------
+  # JOB 3: BUILD THE FLUTTER CLIENT (ANDROID APK)
+  # ---------------------------------------------------
+  build-android-client:
+    name: Build Client (Android APK)
+    runs-on: ubuntu-latest # Linux is faster for Android builds
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+
+      - name: Install Dependencies
+        working-directory: ./spatial_flow_client
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: ./spatial_flow_client
+        run: flutter build apk --release
+
+      - name: Upload Android Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpatialFlow-Android-APK
+          path: spatial_flow_client/build/app/outputs/flutter-apk/app-release.apk
