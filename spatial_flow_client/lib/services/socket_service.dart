@@ -45,7 +45,9 @@ class SocketService with ChangeNotifier {
   // ------------------------------------------------------------------------
 
   void startDiscovery() {
-    _scanForServer();
+    // TEMPORARY: Force connect to your PC's IP (Replace with YOUR numbers from ipconfig)
+    connectToSocket("http://192.168.199.203:3000"); 
+    return; // <--- Stop the rest of the scanning logic
   }
 
   /// Listens for UDP Beacon from the Node.js Server on Port 4444
@@ -233,4 +235,5 @@ class SocketService with ChangeNotifier {
       'fileData': base64Data
     });
   }
+
 }
