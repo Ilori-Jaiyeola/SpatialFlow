@@ -1,137 +1,168 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require("socket.io");
-const ip = require('ip');
+const app = express();
+const http = require('http').createServer(app);
+const io = require('socket.io')(http);
 const dgram = require('dgram');
+const ip = require('ip');
 
-// --- THE NEURAL CORE (AI + TOPOLOGY) ---
-class NeuralEngine {
-    constructor() {
-        this.networkHealth = 'optimal';
-        this.topology = {}; // Stores the physical map
-        this.conferenceMode = false; // Toggle for "Send to All"
+// --- 1. NETWORK DISCOVERY (BEACON) ---
+const udpSocket = dgram.createSocket('udp4');
+const BROADCAST_ADDR = "255.255.255.255";
+const UDP_PORT = 8888;
+const TCP_PORT = 3000;
+const MY_IP = ip.address();
+
+// Beacon Loop: Shouts "I AM HERE" every 2 seconds
+// This fixes the "Searching..." issue by being aggressive
+setInterval(() => {
+    const message = Buffer.from(`SPATIAL_ANNOUNCE|${MY_IP}`);
+    try {
+        udpSocket.setBroadcast(true);
+        udpSocket.send(message, 0, message.length, UDP_PORT, BROADCAST_ADDR);
+    } catch (e) {
+        // Ignore broadcast errors
     }
+}, 2000);
 
-    updateTopology(layoutData) {
-        this.topology = {};
-        console.log("🧠 AI: Recalculating Spatial Topology...");
-        for (let devA of layoutData) {
-            this.topology[devA.id] = {};
-            for (let devB of layoutData) {
-                if (devA.id === devB.id) continue;
-                // Calculate relative positions
-                const xDiff = devB.x - devA.x;
-                const yDiff = devB.y - devA.y;
-                
-                // Define Neighbors (Threshold 0.5 grid units)
-                if (xDiff > 0.5 && Math.abs(yDiff) < 0.5) this.topology[devA.id].right = devB.id;
-                if (xDiff < -0.5 && Math.abs(yDiff) < 0.5) this.topology[devA.id].left = devB.id;
-                if (yDiff > 0.5 && Math.abs(xDiff) < 0.5) this.topology[devA.id].bottom = devB.id;
-                if (yDiff < -0.5 && Math.abs(xDiff) < 0.5) this.topology[devA.id].top = devB.id;
-            }
+// --- 2. SPATIAL TOPOLOGY LOGIC ---
+let devices = [];
+const SLOT_POSITIONS = [
+    { x: 0, y: 0, label: "CORE" },   // Slot 0: The PC Server (Center)
+    { x: -1, y: 0, label: "LEFT" },  // Slot 1: First Phone
+    { x: 1, y: 0, label: "RIGHT" },  // Slot 2: Second Phone
+    { x: 0, y: -1, label: "TOP" },   // Slot 3: Third Device
+    { x: 0, y: 1, label: "BOTTOM" }  // Slot 4: Fourth Device
+];
+
+function assignSpatialSlot(device) {
+    // Find the first empty slot
+    for (let i = 0; i < SLOT_POSITIONS.length; i++) {
+        const slot = SLOT_POSITIONS[i];
+        const isOccupied = devices.some(d => d.spatialSlot === i);
+        if (!isOccupied) {
+            device.spatialSlot = i;
+            device.x = slot.x;
+            device.y = slot.y;
+            return;
         }
-        console.log("🗺️  Current Map:", this.topology);
     }
-
-    // Determine where to send the "Ghost" visuals
-    routePacket(senderId, packet) {
-        const direction = packet.edge;
-        const neighbors = this.topology[senderId];
-        
-        // If no map, or conference mode, fallback to broadcast
-        if (!neighbors || this.conferenceMode) return { target: 'broadcast' };
-
-        const targetId = neighbors[direction.toLowerCase()];
-        return targetId ? { target: 'single', id: targetId } : { target: 'none' };
-    }
-
-    // Determine where to send the HEAVY CONTENT (Video/Image)
-    getContentTargets(senderId) {
-        if (this.conferenceMode) {
-            return 'broadcast';
-        }
-
-        const neighbors = this.topology[senderId];
-        if (!neighbors) return 'broadcast'; // No map? Send to all.
-
-        // Get all unique neighbor IDs (Left, Right, Top, Bottom)
-        // We pre-load content to neighbors so the "swipe" is instant.
-        const targets = Object.values(neighbors);
-        return [...new Set(targets)]; // Remove duplicates
-    }
+    // Overflow: Just put them far right
+    device.spatialSlot = 99;
+    device.x = 2;
+    device.y = 0;
 }
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-const aiCore = new NeuralEngine();
+// --- 3. VECTOR ROUTING (THE MATH) ---
+function findTargetDevice(sender, swipeData) {
+    const { velocityX, velocityY } = swipeData;
+    
+    // Normalize swipe vector
+    const magnitude = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+    const normVx = velocityX / magnitude;
+    const normVy = velocityY / magnitude;
 
-const SERVER_PORT = 3000;
-const DISCOVERY_PORT = 4444;
+    let bestTarget = null;
+    let maxDotProduct = -1.0; // Start low
 
-console.log("------------------------------------------------");
-console.log("🚀 SpatialFlow: Position-Based Connection Active");
-console.log("------------------------------------------------");
+    devices.forEach(target => {
+        if (target.id === sender.id) return; // Don't send to self
 
-// --- UDP DISCOVERY ---
-const udpSocket = dgram.createSocket('udp4');
-udpSocket.bind(() => {
-    udpSocket.setBroadcast(true);
-    setInterval(() => {
-        const msg = JSON.stringify({ service: 'spatial_flow_core', ip: ip.address(), port: SERVER_PORT });
-        udpSocket.send(msg, 0, msg.length, DISCOVERY_PORT, '255.255.255.255');
-    }, 1000);
-});
-
-// --- WEBSOCKET LOGIC ---
-io.on('connection', (socket) => {
-    console.log(`> [Net] Device Connected: ${socket.id}`);
-
-    socket.on('register', (data) => {
-        // ... (Same as before)
-    });
-
-    socket.on('update_layout', (layoutData) => {
-        aiCore.updateTopology(layoutData);
-        io.emit('layout_confirmed', layoutData);
-    });
-
-    // 1. DIRECTIONAL SWIPE ROUTING
-    socket.on('swipe_update', (data) => {
-        const routing = aiCore.routePacket(socket.id, data);
+        // Calculate vector from Sender to Target
+        const dx = target.x - sender.x;
+        const dy = target.y - sender.y;
         
-        if (routing.target === 'single') {
-            // SPATIAL PEERING: Only talk to the specific neighbor
-            io.to(routing.id).emit('render_split', data);
-        } else if (routing.target === 'broadcast') {
-            socket.broadcast.volatile.emit('render_split', data);
+        // Normalize direction to target
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist === 0) return;
+        const normDx = dx / dist;
+        const normDy = dy / dist;
+
+        // Dot Product determines how well the swipe aligns with the target
+        // 1.0 = Perfect alignment, 0.0 = 90 degrees off, -1.0 = Opposite direction
+        const dotProduct = (normVx * normDx) + (normVy * normDy);
+
+        // Threshold: Must be somewhat aligned (> 0.5 means within ~60 degrees)
+        if (dotProduct > 0.5 && dotProduct > maxDotProduct) {
+            maxDotProduct = dotProduct;
+            bestTarget = target;
         }
-        // If target is 'none', we block the packet.
-        // This ensures if you swipe left into nothingness, nothing happens.
     });
 
-    // 2. POSITION-BASED CONTENT TRANSFER
-    socket.on('broadcast_content', (data) => {
-        const targets = aiCore.getContentTargets(socket.id);
+    return bestTarget;
+}
 
-        if (targets === 'broadcast') {
-            console.log(`📡 Conference Mode: Sending content to ALL.`);
-            socket.broadcast.emit('receive_content', data);
+// --- 4. SOCKET LOGIC ---
+io.on('connection', (socket) => {
+    console.log('Node connected:', socket.id);
+
+    socket.on('register', (info) => {
+        // Generate Unique Name: "Pixel 7 [8F]"
+        const uniqueSuffix = socket.id.substr(0, 4).toUpperCase();
+        const smartName = `${info.name} [${uniqueSuffix}]`;
+
+        const newDevice = {
+            id: socket.id,
+            name: smartName,
+            type: info.type,
+            ip: socket.handshake.address
+        };
+
+        // AUTO-POSITION THE DEVICE
+        assignSpatialSlot(newDevice);
+        
+        devices.push(newDevice);
+        
+        // Send back their ID and config
+        socket.emit('register_confirm', { 
+            id: socket.id, 
+            x: newDevice.x, 
+            y: newDevice.y 
+        });
+
+        // Update everyone's map
+        io.emit('device_list', devices);
+        console.log(`Auto-positioned ${smartName} at (${newDevice.x}, ${newDevice.y})`);
+    });
+
+    socket.on('swipe_event', (data) => {
+        const sender = devices.find(d => d.id === socket.id);
+        if (!sender) return;
+
+        // Calculate "Kick" Vector from raw touch data
+        const velocityX = data.vx || 0;
+        const velocityY = data.vy || 0;
+
+        if (data.action === 'release' && (Math.abs(velocityX) > 100 || Math.abs(velocityY) > 100)) {
+            // The user actually swiped hard! Let's find the target.
+            const target = findTargetDevice(sender, { velocityX, velocityY });
+
+            if (target) {
+                console.log(`Routed swipe from ${sender.name} -> ${target.name}`);
+                
+                // Tell Sender: "Transfer Started"
+                socket.emit('transfer_ack', { targetName: target.name });
+
+                // Tell Receiver: "Here comes the ghost hand!"
+                io.to(target.id).emit('swipe_event', {
+                    ...data,
+                    senderId: sender.id,
+                    isTarget: true // Special flag for the "Ghost Hand"
+                });
+            } else {
+                console.log("Swipe detected, but no device in that direction.");
+            }
         } else {
-            console.log(`📍 Spatial Mode: Sending content to neighbors: ${targets}`);
-            targets.forEach(targetId => {
-                io.to(targetId).emit('receive_content', data);
-            });
+            // Just a dragging motion, broadcast to all (for visual effect only)
+            socket.broadcast.emit('swipe_event', data);
         }
     });
 
-    socket.on('toggle_conference_mode', (isEnabled) => {
-        aiCore.conferenceMode = isEnabled;
-        console.log(`🔄 Conference Mode set to: ${isEnabled}`);
-        io.emit('mode_update', { conference: isEnabled });
+    socket.on('disconnect', () => {
+        devices = devices.filter(d => d.id !== socket.id);
+        io.emit('device_list', devices);
     });
 });
 
-server.listen(SERVER_PORT, () => {
-    console.log(`\n✅ Core Ready.`);
+http.listen(TCP_PORT, () => {
+    console.log(`NEURAL CORE ONLINE at ${MY_IP}:${TCP_PORT}`);
 });
