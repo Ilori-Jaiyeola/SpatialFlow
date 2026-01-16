@@ -20,7 +20,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
     super.initState();
     _pulseController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 1),
     )..repeat(reverse: true);
   }
 
@@ -35,82 +35,89 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
     final swipeData = socketService.incomingSwipeData;
-    final content = socketService.incomingContent;
-    final contentType = socketService.incomingContentType;
+    
+    // --- 1. VISUALIZE NETWORK MAP (Automatic) ---
+    // This draws the little dots showing where other devices are relative to you
+    List<Widget> networkMap = _buildNetworkMap(socketService, context);
 
     return Stack(
       children: [
-        // 1. Ghost Hand (The Swipe Indicator)
+        ...networkMap,
+
+        // --- 2. GHOST HAND (Incoming Swipe) ---
         if (swipeData != null && swipeData['isDragging'] == true)
           Positioned(
             left: (swipeData['x'] * MediaQuery.of(context).size.width),
             top: (swipeData['y'] * MediaQuery.of(context).size.height),
             child: FadeTransition(
               opacity: _pulseController!,
-              child: Container(
-                width: 60, height: 60,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.white.withOpacity(0.2),
-                  boxShadow: [
-                    BoxShadow(color: const Color(0xFF00E676).withOpacity(0.5), blurRadius: 20, spreadRadius: 5)
-                  ]
-                ),
-                child: const Icon(Icons.touch_app, color: Colors.white, size: 30),
+              child: Column(
+                children: [
+                   Container(
+                    width: 60, height: 60,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.white.withOpacity(0.2),
+                      boxShadow: [
+                        BoxShadow(color: const Color(0xFF00E676).withOpacity(0.6), blurRadius: 30, spreadRadius: 5)
+                      ]
+                    ),
+                    child: const Icon(Icons.touch_app, color: Colors.white, size: 30),
+                  ),
+                  // Show who is swiping
+                  Container(
+                    margin: const EdgeInsets.only(top: 8),
+                    padding: const EdgeInsets.all(4),
+                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(5)),
+                    child: Text("Incoming Signal", style: const TextStyle(color: Colors.white, fontSize: 10)),
+                  )
+                ],
               ),
             ),
           ),
-
-        // 2. Incoming Video Stream
-        if (contentType == 'video' && content != null)
-           _buildVideoPlayer(socketService), // Pass service to helper
-           
-        // 3. Incoming Image
-        if (contentType == 'image' && content != null)
-          Center(
-            child: Container(
-              width: 300, height: 300,
-              decoration: BoxDecoration(
-                border: Border.all(color: const Color(0xFF00E676), width: 2),
-                borderRadius: BorderRadius.circular(20),
-                image: DecorationImage(
-                   // In a real app, this would be a NetworkImage or FileImage
-                   // For this prototype, we assume it's a local file path sent over
-                   image: FileImage(File(content)), 
-                   fit: BoxFit.cover
-                )
-              ),
-            ),
-          )
       ],
     );
   }
 
-  Widget _buildVideoPlayer(SocketService socketService) {
-    // If controller is missing or pointing to wrong file, re-initialize
-    if (_controller == null) {
-        _controller = VideoPlayerController.file(File(socketService.incomingContent))
-          ..initialize().then((_) {
-            setState(() {});
-            _controller!.play();
-          });
-    }
-    
-    // SYNC LOGIC: If the timestamp drifts, snap it back
-    // FIX IS HERE: We wrap the int in Duration()
-    if (_controller!.value.isInitialized) {
-       int remoteTime = socketService.currentVideoTimestamp;
-       int localTime = _controller!.value.position.inMilliseconds;
-       if ((remoteTime - localTime).abs() > 500) {
-         _controller!.seekTo(Duration(milliseconds: remoteTime));
-       }
-    }
+  List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
+    // This finds MY position
+    var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
+    if (me == null) return [];
 
-    return Center(
-      child: AspectRatio(
-        aspectRatio: _controller!.value.aspectRatio,
-        child: VideoPlayer(_controller!),
-      ),
-    );
+    double myX = (me['x'] ?? 0).toDouble();
+    double myY = (me['y'] ?? 0).toDouble();
+    final size = MediaQuery.of(context).size;
+    final centerX = size.width / 2;
+    final centerY = size.height / 2;
+
+    return service.activeDevices.map<Widget>((device) {
+      if (device['id'] == service.myId) return const SizedBox(); // Don't draw myself
+
+      // Calculate relative position
+      double relX = (device['x'] ?? 0).toDouble() - myX;
+      double relY = (device['y'] ?? 0).toDouble() - myY;
+
+      // Scale it for the screen (1 unit = 150 pixels)
+      double screenX = centerX + (relX * 150);
+      double screenY = centerY + (relY * 150);
+
+      // Clamp to screen edges so they don't disappear
+      screenX = screenX.clamp(20.0, size.width - 20.0);
+      screenY = screenY.clamp(100.0, size.height - 100.0);
+
+      return Positioned(
+        left: screenX - 25,
+        top: screenY - 25,
+        child: Column(
+          children: [
+            const Icon(Icons.router, color: Colors.white54),
+            Text(
+              device['name'].toString().split(' [')[0], // Show simple name
+              style: const TextStyle(color: Colors.white30, fontSize: 10)
+            )
+          ],
+        ),
+      );
+    }).toList();
   }
 }
