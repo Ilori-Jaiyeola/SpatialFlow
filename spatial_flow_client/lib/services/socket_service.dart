@@ -12,9 +12,9 @@ class SocketService with ChangeNotifier {
   bool _isScanning = false;
   bool _isConnected = false;
   bool _isConferenceMode = false;
-  Timer? _heartbeatTimer; // <--- KEEPS CONNECTION ALIVE
+  Timer? _heartbeatTimer; 
 
-  // Data Getters (Keep these from previous version)
+  // Data Getters 
   Map<String, dynamic>? _incomingSwipeData;
   dynamic _incomingContent;
   String? _incomingContentType;
@@ -74,16 +74,15 @@ class SocketService with ChangeNotifier {
 
   // --- 2. UNBREAKABLE CONNECTION ---
   void connectToSpecificIP(String ip) async {
-    if (_isConnected) return; // Prevent double connection
+    if (_isConnected) return; 
     String url = "http://$ip:3000";
     
-    // Configure socket to be sticky
     _socket = IO.io(url, <String, dynamic>{
       'transports': ['websocket'],
       'autoConnect': true,
       'reconnection': true,
-      'reconnectionAttempts': 9999, // Never give up
-      'reconnectionDelay': 500,     // Retry instantly
+      'reconnectionAttempts': 9999,
+      'reconnectionDelay': 500,
     });
 
     if (!_socket!.connected) _socket!.connect();
@@ -92,7 +91,7 @@ class SocketService with ChangeNotifier {
       print('Connected to Neural Core');
       _isConnected = true;
       _isScanning = false;
-      _startHeartbeat(); // <--- START THE PULSE
+      _startHeartbeat(); 
       
       // Identify
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
@@ -125,8 +124,6 @@ class SocketService with ChangeNotifier {
       print('Connection unstable... attempting reconnect');
       _isConnected = false;
       notifyListeners();
-      // Do NOT clear _activeDevices immediately. 
-      // The user might just be walking between rooms.
     });
 
     // --- DATA LISTENERS ---
@@ -137,27 +134,23 @@ class SocketService with ChangeNotifier {
         }
     });
     
-    // Placeholder for WebRTC Signal
     _socket!.on('p2p_signal', (data) {
         print("Received P2P Signal from ${data['senderId']}");
-        // Here we will trigger the WebRTC handshake later
     });
   }
 
-  // --- 3. THE HEARTBEAT (The fix for walking) ---
+  // --- 3. THE HEARTBEAT ---
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_socket != null && _socket!.connected) {
-        _socket!.emit('heartbeat'); // "I am still here!"
+        _socket!.emit('heartbeat'); 
       }
     });
   }
 
-  // --- 4. SENDING ---
+  // --- 4. SENDING & ACTIONS ---
   void broadcastContent(File file, String type) {
-    // Phase 1: Send via Server (Reliable)
-    // Phase 2: We will upgrade this to 'p2p_signal' for WebRTC
     print("Broadcasting $type...");
   }
 
@@ -168,6 +161,12 @@ class SocketService with ChangeNotifier {
     }
   }
   
+  // --- THIS WAS MISSING BEFORE: ---
+  void toggleConferenceMode(bool value) {
+    _isConferenceMode = value;
+    notifyListeners();
+  }
+
   void updateLayout(Map<String, dynamic> config) {
      if (_socket != null) _socket!.emit('update_layout', config);
   }
