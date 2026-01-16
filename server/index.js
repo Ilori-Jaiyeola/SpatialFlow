@@ -25,7 +25,46 @@ let devices = [];
 
 io.on('connection', (socket) => {
     console.log(`Node Connected: ${socket.id}`);
+    
+// 1. Handle the Swipe & Request File
+    socket.on('swipe_event', (data) => {
+        const sender = devices.find(d => d.id === socket.id);
+        if (!sender) return;
 
+        // Calculate Velocity Vector
+        const velocityX = data.vx || 0;
+        const velocityY = data.vy || 0;
+
+        // Only trigger transfer on a hard swipe ('release')
+        if (data.action === 'release' && (Math.abs(velocityX) > 100 || Math.abs(velocityY) > 100)) {
+            const target = findTargetDevice(sender, { velocityX, velocityY });
+
+            if (target) {
+                console.log(`Target Found: ${target.name}. Requesting file from Sender...`);
+                
+                // A. Tell Receiver: "Ghost Hand Incoming!" (Visuals)
+                io.to(target.id).emit('swipe_event', { ...data, senderId: sender.id });
+
+                // B. Tell Sender: "Send the file to [TargetID]!"
+                socket.emit('transfer_request', { targetId: target.id }); 
+            }
+        } else {
+            // Soft drag (Visual only)
+            socket.broadcast.emit('swipe_event', data);
+        }
+    });
+
+    // 2. The Actual File Relay
+    socket.on('file_payload', (data) => {
+        console.log(`Relaying file from ${socket.id} to ${data.targetId}`);
+        // Send the heavy data ONLY to the specific target (saves bandwidth)
+        io.to(data.targetId).emit('content_transfer', {
+            fileData: data.fileData, // Base64 String
+            fileName: data.fileName,
+            fileType: data.fileType
+        });
+    });
+    
     // --- A. REGISTRATION & POSITIONING ---
     socket.on('register', (info) => {
         // Remove any old "ghost" connections from this same IP
@@ -86,3 +125,4 @@ io.on('connection', (socket) => {
 });
 
 http.listen(3000, () => console.log(`NEURAL CORE v2.0 running on ${MY_IP}`));
+
