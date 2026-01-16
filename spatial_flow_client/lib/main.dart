@@ -5,14 +5,12 @@ import 'package:video_player/video_player.dart';
 import 'dart:io';
 import 'dart:ui'; // Needed for ImageFilter
 import 'services/socket_service.dart';
-import 'services/background_manager.dart'; 
 import 'widgets/spatial_renderer.dart';
 import 'widgets/glass_box.dart'; 
 import 'screens/calibration_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // await initializeBackgroundService(); // Uncomment when testing on real Android
   runApp(
     MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => SocketService())],
@@ -54,6 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    // Start auto-discovery immediately
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -87,6 +86,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _senderVideoController!.setVolume(0);
           });
       }
+      // Stage the file in the service so it's ready to send on swipe
       Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFile!, type);
     }
   }
@@ -94,9 +94,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
-
-    // --- FIX 1: REMOVED THE BLOCKING LOADER ---
-    // The app will now render the UI immediately, even if scanning.
 
     return SpatialGestureLayer(
       extraData: _fileType == 'video' && _senderVideoController != null 
@@ -127,7 +124,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         floatingActionButton: _buildFab(),
         body: Stack(
           children: [
-            // --- LAYER 0: FUTURISTIC BACKGROUND ---
+            // --- LAYER 0: BACKGROUND ---
             _buildBackground(),
 
             // --- LAYER 1: GLASS UI DASHBOARD ---
@@ -137,7 +134,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // FIX 2: Pass the service correctly
                     _buildGlassStatusCard(socketService),
                     const SizedBox(height: 30),
                     const Text("NEURAL MESH", style: TextStyle(color: Colors.white54, letterSpacing: 2, fontSize: 12)),
@@ -145,7 +141,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     
                     Expanded(
                       child: socketService.activeDevices.isEmpty
-                          // Better empty state text
                           ? const Center(child: Text("Searching for Neural Core...", style: TextStyle(color: Colors.white30)))
                           : ListView.builder(
                               itemCount: socketService.activeDevices.length,
@@ -206,9 +201,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- FIX 3: THIS METHOD WAS CAUSING THE ERROR ---
   Widget _buildGlassStatusCard(SocketService service) { 
-    // We use 'service' here because that matches the argument name above ^
     return GlassBox(
       borderGlow: service.isConferenceMode,
       child: Column(
@@ -222,16 +215,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   const Text("NEURAL CORE", style: TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 1.5)),
                   const SizedBox(height: 5),
-                  // UPDATED TEXT LOGIC (Using 'service' not 'socketService')
-                  Text(
-                    service.isConnected 
-                        ? "ONLINE" 
-                        : (service.isScanning ? "SCANNING..." : "OFFLINE"), 
-                    style: TextStyle(
-                      color: service.isConnected ? const Color(0xFF00E676) : Colors.amber, 
-                      fontWeight: FontWeight.bold, 
-                      fontSize: 16
-                    )
+                  // --- CLICKABLE STATUS FOR MANUAL CONNECT ---
+                  GestureDetector(
+                    onTap: () {
+                      if (!service.isConnected) {
+                        _showManualConnectDialog(context, service);
+                      }
+                    },
+                    child: Text(
+                      service.isConnected 
+                          ? "ONLINE" 
+                          : (service.isScanning ? "SCANNING... (Tap to Edit)" : "OFFLINE"), 
+                      style: TextStyle(
+                        color: service.isConnected ? const Color(0xFF00E676) : Colors.amber, 
+                        fontWeight: FontWeight.bold, 
+                        fontSize: 16,
+                        decoration: service.isConnected ? null : TextDecoration.underline,
+                      )
+                    ),
                   ),
                 ],
               )
@@ -309,8 +310,48 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ],
     );
   }
+
+  // --- MANUAL CONNECT DIALOG ---
+  void _showManualConnectDialog(BuildContext context, SocketService service) {
+    TextEditingController ipController = TextEditingController(text: "192.168.");
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: const Text("Manual Connection", style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: ipController,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: "Enter PC IP Address",
+            labelStyle: TextStyle(color: Colors.white54),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white54)),
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: const Color(0xFF00E676))),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)),
+            onPressed: () {
+              Navigator.pop(context);
+              if (ipController.text.isNotEmpty) {
+                 // Force the connection to the IP you typed
+                 service.connectToSpecificIP(ipController.text.trim());
+              }
+            },
+            child: const Text("Connect", style: TextStyle(color: Colors.black)),
+          )
+        ],
+      ),
+    );
+  }
 }
 
+// --- SMART GESTURE LAYER (With Velocity) ---
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -352,14 +393,12 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         _lastPos = event.position;
       },
       onPointerUp: (event) {
-        // CALCULATE VELOCITY VECTOR (The "Throw")
+        // CALCULATE VELOCITY (The "Throw")
         final endTime = DateTime.now();
         final duration = endTime.difference(_startTime).inMilliseconds;
         
-        // Prevent division by zero
         if (duration < 50) return; 
 
-        // Vector: End - Start
         final dx = event.position.dx - _startPos.dx;
         final dy = event.position.dy - _startPos.dy;
         
@@ -370,8 +409,8 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         socketService.sendSwipeData({
             'isDragging': false, 
             'action': 'release',
-            'vx': vx, // Send Velocity X
-            'vy': vy, // Send Velocity Y
+            'vx': vx, 
+            'vy': vy,
             ...widget.extraData
         });
       },
