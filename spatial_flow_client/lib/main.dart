@@ -311,7 +311,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- KEEP THE EXISTING SPATIAL GESTURE LAYER CLASS BELOW ---
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -321,34 +320,61 @@ class SpatialGestureLayer extends StatefulWidget {
   @override
   State<SpatialGestureLayer> createState() => _SpatialGestureLayerState();
 }
+
 class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
-  Offset _lastPosition = Offset.zero;
-  DateTime _lastTime = DateTime.now();
+  Offset _startPos = Offset.zero;
+  Offset _lastPos = Offset.zero;
+  DateTime _startTime = DateTime.now();
+
   @override
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context, listen: false);
     final size = MediaQuery.of(context).size;
+
     return Listener(
-      onPointerDown: (event) { _lastPosition = event.position; _lastTime = DateTime.now(); },
-      onPointerMove: (event) {
-        if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
-        final currentPos = event.position;
-        final currentTime = DateTime.now();
-        final timeDelta = currentTime.difference(_lastTime).inMilliseconds;
-        double velocity = 0;
-        if (timeDelta > 0) velocity = ((currentPos - _lastPosition).distance / timeDelta) * 1000;
-        String? activeEdge;
-        if (currentPos.dx > size.width - 50) activeEdge = "RIGHT";
-        else if (currentPos.dx < 50) activeEdge = "LEFT";
-        if (activeEdge != null) {
-          Map<String, dynamic> payload = {'x': currentPos.dx / size.width, 'y': currentPos.dy / size.height, 'velocity': velocity, 'edge': activeEdge, 'isDragging': true};
-          payload.addAll(widget.extraData);
-          socketService.sendSwipeData(payload);
-        }
-        _lastPosition = currentPos;
-        _lastTime = currentTime;
+      onPointerDown: (event) {
+        _startPos = event.position;
+        _lastPos = event.position;
+        _startTime = DateTime.now();
       },
-      onPointerUp: (event) { socketService.sendSwipeData({'isDragging': false, 'action': 'release'}); },
+      onPointerMove: (event) {
+        if (widget.onDragUpdate != null) {
+          widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
+        }
+        
+        // Broadcast dragging for visual effect
+        socketService.sendSwipeData({
+            'x': event.position.dx / size.width, 
+            'y': event.position.dy / size.height,
+            'isDragging': true,
+            'action': 'move'
+        });
+        _lastPos = event.position;
+      },
+      onPointerUp: (event) {
+        // CALCULATE VELOCITY VECTOR (The "Throw")
+        final endTime = DateTime.now();
+        final duration = endTime.difference(_startTime).inMilliseconds;
+        
+        // Prevent division by zero
+        if (duration < 50) return; 
+
+        // Vector: End - Start
+        final dx = event.position.dx - _startPos.dx;
+        final dy = event.position.dy - _startPos.dy;
+        
+        // Pixels per second
+        double vx = (dx / duration) * 1000;
+        double vy = (dy / duration) * 1000;
+
+        socketService.sendSwipeData({
+            'isDragging': false, 
+            'action': 'release',
+            'vx': vx, // Send Velocity X
+            'vy': vy, // Send Velocity Y
+            ...widget.extraData
+        });
+      },
       child: widget.child,
     );
   }
