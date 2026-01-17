@@ -3,54 +3,49 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart'; // Needed for Clipboard
+import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart'; // NEW
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
   String? _myId;
   List<dynamic> _activeDevices = [];
-  bool _isScanning = false;
   bool _isConnected = false;
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
-  // --- FILE TRANSFER STATE ---
-  File? _stagedFile; 
-  String? _stagedFileType;
+  // --- MULTI-FILE STAGING ---
+  List<File> _stagedFiles = []; // NOW A LIST
+  String _stagedFileType = 'file';
+
+  // --- INCOMING DATA ---
   Map<String, dynamic>? _incomingSwipeData;
-  dynamic _incomingContent;
+  String? _lastReceivedFilePath; // Track the actual file path
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
 
-  // --- UNIFIED CANVAS STATE (New) ---
+  // --- UNIFIED CANVAS ---
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // --- GETTERS ---
-  bool get isScanning => _isScanning;
+  // Getters
   bool get isConnected => _isConnected;
   bool get isConferenceMode => _isConferenceMode;
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
-  dynamic get incomingContent => _incomingContent;
+  String? get lastReceivedFilePath => _lastReceivedFilePath; // Updated getter
   String? get incomingContentType => _incomingContentType;
   String get transferStatus => _transferStatus;
-  
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
 
-  // =========================================================
-  // 1. DISCOVERY & CONNECTION
-  // =========================================================
+  // --- 1. DISCOVERY & CONNECTION ---
   void startDiscovery() async {
     if (_isConnected) return;
-    _isScanning = true;
-    notifyListeners();
-
     try {
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
         socket.broadcastEnabled = true;
@@ -69,20 +64,8 @@ class SocketService with ChangeNotifier {
             }
           }
         });
-        
-        Timer.periodic(const Duration(seconds: 1), (timer) {
-           if (_isConnected) timer.cancel();
-           else {
-             try {
-                List<int> data = utf8.encode("SPATIAL_DISCOVER");
-                socket.send(data, InternetAddress("255.255.255.255"), 3000);
-             } catch(e) {}
-           }
-        });
       });
-    } catch (e) {
-      print("UDP Error: $e");
-    }
+    } catch (e) { print("UDP Error: $e"); }
   }
 
   void connectToSpecificIP(String ip) async {
@@ -95,7 +78,7 @@ class SocketService with ChangeNotifier {
       'reconnection': true,
       'reconnectionAttempts': 9999,
       'reconnectionDelay': 500,
-      'maxHttpBufferSize': 1e8 // 100MB Limit
+      'maxHttpBufferSize': 1e8 // 100MB
     });
 
     if (!_socket!.connected) _socket!.connect();
@@ -103,45 +86,28 @@ class SocketService with ChangeNotifier {
     _socket!.onConnect((_) async {
       print('Connected to Neural Core');
       _isConnected = true;
-      _isScanning = false;
       _startHeartbeat(); 
       
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
       String deviceName = "Unknown Node";
-      String type = "mobile";
+      String type = Platform.isAndroid || Platform.isIOS ? "mobile" : "desktop";
       if (Platform.isAndroid) {
         AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
         deviceName = androidInfo.model;
       } else if (Platform.isWindows) {
         WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
         deviceName = winInfo.computerName;
-        type = "desktop";
       }
 
       _socket!.emit('register', {'name': deviceName, 'type': type});
       notifyListeners();
     });
 
-    _socket!.on('register_confirm', (data) {
-      _myId = data['id'];
-      notifyListeners();
-    });
+    _socket!.on('register_confirm', (data) => _myId = data['id']);
+    _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
+    _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
 
-    _socket!.on('device_list', (data) {
-      _activeDevices = data;
-      notifyListeners();
-    });
-
-    _socket!.on('disconnect', (_) {
-      _isConnected = false;
-      notifyListeners();
-    });
-
-    // =========================================================
-    // 2. FILE & GESTURE LISTENERS
-    // =========================================================
-    
-    // Swipe Coordinates
+    // --- SWIPE GHOST ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
@@ -149,37 +115,48 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // Sending File Logic
+    // --- SENDING LOGIC (BATCH PROCESSING) ---
     _socket!.on('transfer_request', (data) async {
        String targetId = data['targetId'];
-       _transferStatus = "SENDING..."; 
-       notifyListeners();
        
-       if (_stagedFile != null) {
+       if (_stagedFiles.isNotEmpty) {
+         _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
+         notifyListeners();
+
          try {
-           List<int> bytes = await _stagedFile!.readAsBytes();
-           String base64Data = base64Encode(bytes);
-           
-           _socket!.emit('file_payload', {
-             'targetId': targetId,
-             'fileData': base64Data,
-             'fileName': _stagedFile!.path.split('/').last,
-             'fileType': _stagedFileType
-           });
-           _transferStatus = "SENT";
+           // LOOP THROUGH ALL SELECTED FILES
+           for (var file in _stagedFiles) {
+             List<int> bytes = await file.readAsBytes();
+             String base64Data = base64Encode(bytes);
+             
+             _socket!.emit('file_payload', {
+               'targetId': targetId,
+               'fileData': base64Data,
+               'fileName': file.path.split('/').last,
+               'fileType': _stagedFileType
+             });
+             print("Sent: ${file.path}");
+             await Future.delayed(const Duration(milliseconds: 300)); // Tiny buffer
+           }
+
+           _transferStatus = "SENT ALL";
+           // CLEAR STAGE so we don't resend on next swipe unless re-selected
+           // _stagedFiles.clear(); // Optional: Keep them if user wants to resend
            notifyListeners();
+           
            Future.delayed(const Duration(seconds: 2), () {
              _transferStatus = "IDLE";
              notifyListeners();
            });
+
          } catch (e) {
-           _transferStatus = "ERROR SENDING";
+           _transferStatus = "ERROR";
            notifyListeners();
          }
        }
     });
 
-    // Receiving File Logic
+    // --- RECEIVING LOGIC (AUTO-SORTING) ---
     _socket!.on('content_transfer', (data) async {
        _transferStatus = "RECEIVING...";
        notifyListeners();
@@ -190,61 +167,56 @@ class SocketService with ChangeNotifier {
          String type = data['fileType'];
          
          Uint8List bytes = base64Decode(base64Data);
-         final directory = await getTemporaryDirectory();
-         final newFile = File('${directory.path}/$fileName');
+         
+         // 1. DETERMINE FOLDER (SORTING LOGIC)
+         final appDir = await getApplicationDocumentsDirectory();
+         String subFolder = (type == 'video') ? 'SpatialVideos' : 'SpatialImages';
+         final saveDir = Directory('${appDir.path}/$subFolder');
+         if (!await saveDir.exists()) {
+           await saveDir.create(recursive: true);
+         }
+
+         // 2. SAVE FILE
+         final newFile = File('${saveDir.path}/$fileName');
          await newFile.writeAsBytes(bytes);
 
-         _incomingContent = newFile.path;
+         // 3. UPDATE STATE
+         _lastReceivedFilePath = newFile.path;
          _incomingContentType = type;
          _transferStatus = "RECEIVED";
          notifyListeners();
+         
+         // 4. AUTO-OPEN (Optional, or just notify)
+         // OpenFilex.open(newFile.path); 
 
        } catch (e) {
+         print("Save Error: $e");
          _transferStatus = "SAVE FAILED";
          notifyListeners();
        }
     });
 
-    // =========================================================
-    // 3. UNIFIED CANVAS LISTENERS (New)
-    // =========================================================
-
-    // Clipboard Listener
+    // --- UNIFIED CANVAS LISTENERS ---
     _socket!.on('clipboard_sync', (data) {
-       String text = data['text'];
-       print("Clipboard Received: $text");
-       Clipboard.setData(ClipboardData(text: text));
-       // We notify listeners so the UI can show a snackbar/toast if needed
-       notifyListeners();
+       Clipboard.setData(ClipboardData(text: data['text']));
     });
 
-    // Mouse Teleport Listener
     _socket!.on('mouse_teleport', (data) {
-       // Only update if we are receiving (Phone side usually)
        double dx = (data['dx'] as num).toDouble();
        double dy = (data['dy'] as num).toDouble();
-       
        _showVirtualCursor = true;
        _virtualMousePos += Offset(dx, dy);
        notifyListeners();
-       
-       // Auto-hide cursor after 5 seconds of inactivity
-       Timer(const Duration(seconds: 5), () { 
-          // Check if position hasn't changed recently (omitted for simplicity)
-          // _showVirtualCursor = false; 
-          // notifyListeners();
-       });
     });
   }
 
-  // =========================================================
-  // 4. ACTIONS & METHODS
-  // =========================================================
+  // --- ACTIONS ---
 
-  void broadcastContent(File file, String type) {
-    _stagedFile = file;
+  // UPDATED: Accepts List<File>
+  void broadcastContent(List<File> files, String type) {
+    _stagedFiles = files;
     _stagedFileType = type;
-    _transferStatus = "READY";
+    _transferStatus = "READY (${files.length})";
     notifyListeners();
   }
 
@@ -255,21 +227,13 @@ class SocketService with ChangeNotifier {
     }
   }
 
-  // New: Sync Clipboard
   void syncClipboard(String text) {
-    if (_socket != null) {
-      _socket!.emit('clipboard_sync', {'text': text});
-    }
+    if (_socket != null) _socket!.emit('clipboard_sync', {'text': text});
   }
 
-  // New: Send Mouse Delta
   void sendMouseTeleport(String targetId, double dx, double dy) {
     if (_socket != null) {
-      _socket!.emit('mouse_teleport', {
-        'targetId': targetId,
-        'dx': dx,
-        'dy': dy
-      });
+      _socket!.emit('mouse_teleport', {'targetId': targetId, 'dx': dx, 'dy': dy});
     }
   }
 
@@ -278,16 +242,17 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
-  void updateLayout(Map<String, dynamic> config) {
-     if (_socket != null) _socket!.emit('update_layout', config);
+  // UPDATED: Open the last received file
+  void openLastFile() {
+    if (_lastReceivedFilePath != null) {
+      OpenFilex.open(_lastReceivedFilePath);
+    }
   }
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_socket != null && _socket!.connected) {
-        _socket!.emit('heartbeat'); 
-      }
+      if (_socket != null && _socket!.connected) _socket!.emit('heartbeat'); 
     });
   }
 }
