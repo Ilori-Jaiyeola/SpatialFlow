@@ -11,20 +11,56 @@ class SpatialRenderer extends StatefulWidget {
   State<SpatialRenderer> createState() => _SpatialRendererState();
 }
 
-class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProviderStateMixin {
+class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderStateMixin {
   VideoPlayerController? _controller;
   AnimationController? _pulseController;
+  
+  // UNIFIED CANVAS ANIMATION
+  AnimationController? _entryController;
+  Animation<Offset>? _slideAnimation;
 
   @override
   void initState() {
     super.initState();
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
+    
+    // Setup Entry Animation
+    _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
+    _slideAnimation = Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
+  }
+
+  @override
+  void didUpdateWidget(SpatialRenderer oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // Trigger animation when new file arrives
+    final service = Provider.of<SocketService>(context, listen: false);
+    if (service.lastReceivedFilePath != null && !_entryController!.isCompleted) {
+       _calculateEntryDirection(service);
+       _entryController!.forward(from: 0);
+    }
+  }
+
+  void _calculateEntryDirection(SocketService service) {
+    if (service.incomingSenderId == null) return;
+    
+    // Find Sender
+    var sender = service.activeDevices.firstWhere((d) => d['id'] == service.incomingSenderId, orElse: () => null);
+    var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
+
+    if (sender != null && me != null) {
+       double dx = (sender['x'] ?? 0) - (me['x'] ?? 0);
+       // If sender is to my Left (dx < 0), slide from Left (-1.0, 0)
+       // If sender is to my Right (dx > 0), slide from Right (1.0, 0)
+       double startX = dx > 0 ? 1.0 : -1.0; 
+       _slideAnimation = Tween<Offset>(begin: Offset(startX, 0), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
+    }
   }
 
   @override
   void dispose() {
     _controller?.dispose();
     _pulseController?.dispose();
+    _entryController?.dispose();
     super.dispose();
   }
 
@@ -37,10 +73,10 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
 
     return Stack(
       children: [
-        // 1. RADAR
+        // 1. RADAR MAP
         ..._buildNetworkMap(socketService, context),
 
-        // 2. GHOST HAND (Swipe Indicator)
+        // 2. GHOST SWIPE INDICATOR
         if (swipeData != null && swipeData['isDragging'] == true)
           Positioned(
             left: (swipeData['x'] * MediaQuery.of(context).size.width),
@@ -50,89 +86,63 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
               child: Transform.rotate(
                 angle: -0.2, 
                 child: Container(
-                  width: 120, height: 120,
-                  decoration: BoxDecoration(
-                    color: Colors.black87,
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFF00E676), width: 2),
-                    boxShadow: [BoxShadow(color: const Color(0xFF00E676).withOpacity(0.4), blurRadius: 20, spreadRadius: 2)]
-                  ),
-                  child: Center(
-                    child: Icon(contentType == 'video' ? Icons.videocam : Icons.image, color: Colors.white, size: 40)
-                  ),
+                  width: 150, height: 150, // BIGGER
+                  decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFF00E676), width: 2)),
+                  child: Center(child: Icon(contentType == 'video' ? Icons.videocam : Icons.image, color: Colors.white, size: 50)),
                 ),
               ),
             ),
           ),
 
-        // 3. RECEIVED MEDIA (FULL SCREEN & INTERACTIVE)
+        // 3. UNIFIED CANVAS: FULL SCREEN CONTENT
         if (contentPath != null)
-          Positioned.fill(
-            child: GestureDetector(
-              onTap: () {
-                // OPEN FILE ON TAP
-                socketService.openLastFile();
-              },
-              child: Container(
-                color: Colors.black, // Background to hide app
-                child: Stack(
-                  children: [
-                    // A. THE CONTENT
-                    Center(
-                      child: contentType == 'video' 
-                          ? _buildVideoPlayer(File(contentPath))
-                          : Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity),
-                    ),
-                    
-                    // B. OVERLAY UI (Open Button)
-                    Positioned(
-                      bottom: 50, left: 0, right: 0,
-                      child: Center(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                          decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(30)),
-                          child: const Text("Tap anywhere to Open", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        ),
+          SlideTransition(
+            position: _slideAnimation!,
+            child: Positioned.fill(
+              child: GestureDetector(
+                onTap: () => socketService.openLastFile(),
+                child: Container(
+                  color: Colors.black, 
+                  child: Stack(
+                    children: [
+                      Center(
+                        child: contentType == 'video' 
+                            ? _buildVideoPlayer(File(contentPath))
+                            : Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity),
                       ),
-                    ),
-                    
-                    // C. SORTING BADGE
-                    Positioned(
-                      top: 50, right: 20,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        color: const Color(0xFF00E676),
-                        child: Text(
-                          contentType == 'video' ? "Saved to SpatialVideos" : "Saved to SpatialImages", 
-                          style: const TextStyle(color: Colors.black, fontSize: 10, fontWeight: FontWeight.bold)
-                        ),
+                      // CLOSE BUTTON
+                      Positioned(
+                         top: 40, left: 20,
+                         child: IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () {
+                           // Logic to clear view could be added to service, or just let user tap to open
+                         })
                       ),
-                    )
-                  ],
+                      Positioned(
+                        bottom: 50, left: 0, right: 0,
+                        child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(30)), child: const Text("Tap to Open Gallery", style: TextStyle(color: Colors.white)))),
+                      )
+                    ],
+                  ),
                 ),
               ),
             ),
           ),
 
-        // 4. VIRTUAL MOUSE
+        // 4. MOUSE
         if (socketService.showVirtualCursor)
-           Positioned(
-             left: socketService.virtualMousePos.dx,
-             top: socketService.virtualMousePos.dy,
-             child: const MouseCursorWidget(), 
-           ),
+           Positioned(left: socketService.virtualMousePos.dx, top: socketService.virtualMousePos.dy, child: const MouseCursorWidget()),
       ],
     );
   }
-
+  
+  // ... (Keep _buildNetworkMap, _buildVideoPlayer, MouseCursorWidget exactly as before)
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
-    // (Keep same Radar logic as before)
+    // (Copy existing logic from previous response)
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
     double myX = (me['x'] ?? 0).toDouble();
     double myY = (me['y'] ?? 0).toDouble();
     final size = MediaQuery.of(context).size;
-    
     return service.activeDevices.map<Widget>((device) {
       if (device['id'] == service.myId) return const SizedBox(); 
       double relX = (device['x'] ?? 0).toDouble() - myX;
@@ -141,24 +151,10 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
       double screenY = (size.height / 2) + (relY * 150);
       screenX = screenX.clamp(40.0, size.width - 40.0);
       screenY = screenY.clamp(120.0, size.height - 120.0);
-
-      return Positioned(
-        left: screenX - 30, top: screenY - 30,
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(8),
-              decoration: BoxDecoration(color: Colors.white10, shape: BoxShape.circle, border: Border.all(color: Colors.white24)),
-              child: Icon(device['type'] == 'mobile' ? Icons.smartphone : Icons.computer, color: Colors.white70, size: 20),
-            ),
-            const SizedBox(height: 4),
-            Text(device['name'].toString().split(' [')[0], style: const TextStyle(color: Colors.white30, fontSize: 10))
-          ],
-        ),
-      );
+      return Positioned(left: screenX - 30, top: screenY - 30, child: Column(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.white10, shape: BoxShape.circle, border: Border.all(color: Colors.white24)), child: Icon(device['type'] == 'mobile' ? Icons.smartphone : Icons.computer, color: Colors.white70, size: 20)), const SizedBox(height: 4), Text(device['name'].toString().split(' [')[0], style: const TextStyle(color: Colors.white30, fontSize: 10))]));
     }).toList();
   }
-
+  
   Widget _buildVideoPlayer(File file) {
     if (_controller == null || _controller?.dataSource != file.path) {
         _controller?.dispose();
@@ -173,12 +169,6 @@ class MouseCursorWidget extends StatelessWidget {
   const MouseCursorWidget({Key? key}) : super(key: key);
   @override
   Widget build(BuildContext context) {
-    return Transform.translate(
-      offset: const Offset(-5, -5), 
-      child: Stack(children: [
-        const Icon(Icons.near_me, color: Colors.black54, size: 32),
-        const Icon(Icons.near_me, color: Color(0xFF00E676), size: 30),
-      ]),
-    );
+    return Transform.translate(offset: const Offset(-5, -5), child: Stack(children: [const Icon(Icons.near_me, color: Colors.black54, size: 32), const Icon(Icons.near_me, color: Color(0xFF00E676), size: 30)]));
   }
 }
