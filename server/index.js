@@ -4,7 +4,8 @@ const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
     pingInterval: 2000, 
     pingTimeout: 5000,
-    cors: { origin: "*" } // Allow all connections
+    cors: { origin: "*" },
+    maxHttpBufferSize: 1e8 // Allow files up to 100MB
 });
 const dgram = require('dgram');
 const os = require('os');
@@ -12,24 +13,18 @@ const os = require('os');
 const UDP_PORT = 8888;
 const TCP_PORT = 3000;
 
-// --- 1. THE OMNI-BROADCASTER (Fixes "Scanning..." Loop) ---
-// This function finds the broadcast address for every network card you have
+// =========================================================
+// 1. OMNI-BROADCASTING (Fixes "Scanning..." Issue)
+// =========================================================
 function getBroadcastAddresses() {
     const interfaces = os.networkInterfaces();
     const addresses = [];
-    
     for (const name of Object.keys(interfaces)) {
         for (const net of interfaces[name]) {
-            // Skip internal (localhost) and non-IPv4 addresses
             if (net.family === 'IPv4' && !net.internal) {
-                // Calculate Broadcast Address (Simple logic: replace last segment with 255)
-                // A proper subnet calculation is better, but this works for 99% of home routers
                 const parts = net.address.split('.');
                 parts[3] = '255'; 
-                addresses.push({
-                    ip: net.address,
-                    broadcast: parts.join('.') 
-                });
+                addresses.push({ ip: net.address, broadcast: parts.join('.') });
             }
         }
     }
@@ -37,42 +32,78 @@ function getBroadcastAddresses() {
 }
 
 const udpSocket = dgram.createSocket('udp4');
-
 udpSocket.bind(() => {
     udpSocket.setBroadcast(true);
     console.log("--- NEURAL CORE DISCOVERY ACTIVE ---");
 });
 
-// Broadcast Loop: Shout on ALL interfaces every 1 second
 setInterval(() => {
     const addresses = getBroadcastAddresses();
     if (addresses.length === 0) return;
-
     addresses.forEach(addr => {
-        // Message format: SPATIAL_ANNOUNCE|YOUR_PC_IP
         const message = Buffer.from(`SPATIAL_ANNOUNCE|${addr.ip}`);
         try {
             udpSocket.send(message, 0, message.length, UDP_PORT, addr.broadcast);
-            // Also send to global broadcast just in case
-            udpSocket.send(message, 0, message.length, UDP_PORT, "255.255.255.255");
-        } catch (e) {
-            // Ignore errors from inactive adapters
-        }
+        } catch (e) {}
     });
 }, 1000);
 
-// --- 2. SOCKET LOGIC (Keep your existing logic) ---
+// =========================================================
+// 2. VECTOR MATH (The "Brain" for Swipes)
+// =========================================================
 let devices = [];
 
-io.on('connection', (socket) => {
-    console.log(`Connection attempt from: ${socket.handshake.address}`);
+function findTargetDevice(sender, swipeData) {
+    const { velocityX, velocityY } = swipeData;
+    
+    // Normalize swipe vector
+    const magnitude = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
+    if (magnitude === 0) return null;
+    
+    const normVx = velocityX / magnitude;
+    const normVy = velocityY / magnitude;
 
-    socket.on('register', (info) => {
-        const clientIp = socket.handshake.address.replace('::ffff:', ''); // Clean IPv6 junk
+    let bestTarget = null;
+    let maxDotProduct = -1.0; 
+
+    devices.forEach(target => {
+        if (target.id === sender.id) return; 
+
+        // Vector from Sender -> Target
+        const dx = target.x - sender.x;
+        const dy = target.y - sender.y;
         
-        // Remove existing session from same IP to prevent duplicates
-        devices = devices.filter(d => d.ip !== clientIp);
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist === 0) return;
+        
+        const normDx = dx / dist;
+        const normDy = dy / dist;
 
+        // Dot Product (How well does the swipe align with the target?)
+        const dotProduct = (normVx * normDx) + (normVy * normDy);
+
+        // Threshold: > 0.5 means roughly in the right direction
+        if (dotProduct > 0.5 && dotProduct > maxDotProduct) {
+            maxDotProduct = dotProduct;
+            bestTarget = target;
+        }
+    });
+
+    return bestTarget;
+}
+
+// =========================================================
+// 3. SOCKET LOGIC (Connection + File Relay)
+// =========================================================
+io.on('connection', (socket) => {
+    console.log(`Node Connected: ${socket.id}`);
+
+    // --- A. REGISTRATION ---
+    socket.on('register', (info) => {
+        const clientIp = socket.handshake.address.replace('::ffff:', '');
+        devices = devices.filter(d => d.ip !== clientIp); // Remove duplicates
+
+        // Auto-assign Slots: Center(0,0), Left(-1,0), Right(1,0)
         const newDevice = {
             id: socket.id,
             name: info.name,
@@ -83,24 +114,54 @@ io.on('connection', (socket) => {
         };
         
         devices.push(newDevice);
-        console.log(`REGISTERED: ${newDevice.name} at ${newDevice.ip}`);
+        console.log(`Device Registered: ${newDevice.name} at (${newDevice.x}, ${newDevice.y})`);
         
         socket.emit('register_confirm', { id: socket.id });
         io.emit('device_list', devices);
     });
 
+    // --- B. SWIPE & TRANSFER LOGIC ---
+    socket.on('swipe_event', (data) => {
+        const sender = devices.find(d => d.id === socket.id);
+        if (!sender) return;
+
+        const velocityX = data.vx || 0;
+        const velocityY = data.vy || 0;
+
+        // Only trigger transfer on HARD swipes (Velocity > 100)
+        if (data.action === 'release' && (Math.abs(velocityX) > 100 || Math.abs(velocityY) > 100)) {
+            const target = findTargetDevice(sender, { velocityX, velocityY });
+
+            if (target) {
+                console.log(`Swipe Directed: ${sender.name} -> ${target.name}`);
+                
+                // 1. Show Ghost Hand on Target
+                io.to(target.id).emit('swipe_event', { ...data, senderId: sender.id });
+
+                // 2. Request File from Sender
+                socket.emit('transfer_request', { targetId: target.id }); 
+            } else {
+                console.log("Swipe detected, but no target in that direction.");
+            }
+        } else {
+            // Soft drag (Visual only)
+            socket.broadcast.emit('swipe_event', data);
+        }
+    });
+
+    // --- C. FILE RELAY (The Missing Piece) ---
+    socket.on('file_payload', (data) => {
+        console.log(`Relaying file (${data.fileName}) to ${data.targetId}`);
+        io.to(data.targetId).emit('content_transfer', data);
+    });
+
     socket.on('disconnect', () => {
-        console.log(`Node Disconnected: ${socket.id}`);
         devices = devices.filter(d => d.id !== socket.id);
         io.emit('device_list', devices);
     });
-
-    // ... (Your other event handlers: swipe_event, file_payload, etc.) ...
-    // Make sure to paste your file transfer logic here if it's not present
-    socket.on('swipe_event', (data) => socket.broadcast.emit('swipe_event', data));
 });
 
+const addrs = getBroadcastAddresses().map(a => a.ip).join(', ');
 http.listen(TCP_PORT, '0.0.0.0', () => {
-    const addrs = getBroadcastAddresses().map(a => a.ip).join(', ');
-    console.log(`NEURAL CORE ONLINE. Listening on IPs: [${addrs}]`);
+    console.log(`NEURAL CORE ONLINE. Listening on: [${addrs}]`);
 });
