@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
-import 'package:flutter/services.dart'; // Required for Clipboard
-import 'dart:io'; // Required for Platform checks
+import 'package:flutter/services.dart'; 
+import 'dart:io';
 import 'dart:ui'; 
+import 'package:wakelock_plus/wakelock_plus.dart'; // NEW
 import 'services/socket_service.dart';
 import 'widgets/spatial_renderer.dart';
 import 'widgets/glass_box.dart'; 
@@ -45,7 +46,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  File? _selectedFile;
+  List<File> _selectedFiles = []; // NOW A LIST
   String? _fileType;
   VideoPlayerController? _senderVideoController;
   Offset _dragPosition = const Offset(100, 400);
@@ -53,6 +54,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
+    // 1. KEEP SCREEN ON (Prevents Disconnects)
+    WakelockPlus.enable(); 
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -62,23 +65,30 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
+  // 2. MULTI-SELECT FUNCTION
   Future<void> _pickMedia(String type) async {
     final picker = ImagePicker();
-    XFile? pickedFile;
+    List<XFile> pickedFiles = [];
+    
     if (type == 'video') {
-      pickedFile = await picker.pickVideo(source: ImageSource.gallery);
+      // Pick Single Video (ImagePicker doesn't support multi-video yet nicely)
+      final XFile? vid = await picker.pickVideo(source: ImageSource.gallery);
+      if (vid != null) pickedFiles.add(vid);
     } else {
-      pickedFile = await picker.pickImage(source: ImageSource.gallery);
+      // Pick Multiple Images
+      pickedFiles = await picker.pickMultiImage();
     }
 
-    if (pickedFile != null) {
+    if (pickedFiles.isNotEmpty) {
       setState(() {
-        _selectedFile = File(pickedFile!.path);
+        _selectedFiles = pickedFiles.map((x) => File(x.path)).toList();
         _fileType = type;
       });
+      
+      // Setup preview for first file if it's a video
       if (type == 'video') {
         _senderVideoController?.dispose();
-        _senderVideoController = VideoPlayerController.file(_selectedFile!)
+        _senderVideoController = VideoPlayerController.file(_selectedFiles.first)
           ..initialize().then((_) {
             setState(() {});
             _senderVideoController!.play();
@@ -86,7 +96,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _senderVideoController!.setVolume(0);
           });
       }
-      Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFile!, type);
+      
+      // Stage ALL files
+      Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
     }
   }
 
@@ -123,10 +135,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         floatingActionButton: _buildFab(),
         body: Stack(
           children: [
-            // --- LAYER 0: BACKGROUND ---
             _buildBackground(),
 
-            // --- LAYER 1: GLASS UI DASHBOARD ---
+            // MAIN DASHBOARD
             SafeArea(
               child: Padding(
                 padding: const EdgeInsets.all(20.0),
@@ -153,23 +164,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
 
-            // --- LAYER 2: SENDER CONTENT ---
-            if (_selectedFile != null)
+            // DRAGGABLE SENDER PREVIEW
+            if (_selectedFiles.isNotEmpty)
               Positioned(
                 left: _dragPosition.dx,
                 top: _dragPosition.dy,
                 child: _buildDraggableContent(),
               ),
 
-            // --- LAYER 3: RECEIVER GHOST & CURSOR ---
+            // RECEIVER LAYER (Full Screen Logic inside)
             const SpatialRenderer(),
           ],
         ),
       ),
     );
   }
-
-  // --- VISUAL COMPONENTS ---
 
   Widget _buildBackground() {
     return Container(
@@ -179,23 +188,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           end: Alignment.bottomRight,
           colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)],
         ),
-      ),
-      child: Stack(
-        children: [
-          Positioned(top: -50, left: -50, child: _buildOrb(Colors.purpleAccent)),
-          Positioned(bottom: 100, right: -50, child: _buildOrb(Colors.blueAccent)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildOrb(Color color) {
-    return Container(
-      width: 200, height: 200,
-      decoration: BoxDecoration(shape: BoxShape.circle, color: color.withOpacity(0.4)),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 50, sigmaY: 50),
-        child: Container(color: Colors.transparent),
       ),
     );
   }
@@ -216,19 +208,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 5),
                   GestureDetector(
                     onTap: () {
-                      if (!service.isConnected) {
-                        _showManualConnectDialog(context, service);
-                      }
+                      if (!service.isConnected) _showManualConnectDialog(context, service);
                     },
                     child: Text(
                       service.isConnected 
                           ? "ONLINE" 
-                          : (service.isScanning ? "SCANNING... (Tap to Edit)" : "OFFLINE"), 
+                          : (service.isScanning ? "SCANNING... (Tap)" : "OFFLINE"), 
                       style: TextStyle(
                         color: service.isConnected ? const Color(0xFF00E676) : Colors.amber, 
                         fontWeight: FontWeight.bold, 
                         fontSize: 16,
-                        decoration: service.isConnected ? null : TextDecoration.underline,
                       )
                     ),
                   ),
@@ -237,7 +226,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ],
               ),
               const Spacer(),
-              // --- NEW: CLIPBOARD PUSH BUTTON ---
               IconButton(
                 icon: const Icon(Icons.copy_all, color: Colors.white70),
                 tooltip: "Push Clipboard",
@@ -246,7 +234,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   if (data != null && data.text != null) {
                     service.syncClipboard(data.text!);
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Clipboard Pushed to Network!"), backgroundColor: Color(0xFF00E676))
+                      const SnackBar(content: Text("Clipboard Pushed!"), backgroundColor: Color(0xFF00E676))
                     );
                   }
                 },
@@ -300,11 +288,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
         boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
         border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
       ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
-            ? VideoPlayer(_senderVideoController!)
-            : (_selectedFile != null ? Image.file(_selectedFile!, fit: BoxFit.cover) : Container(color: Colors.grey)),
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
+                ? VideoPlayer(_senderVideoController!)
+                : (_selectedFiles.isNotEmpty ? Image.file(_selectedFiles.first, fit: BoxFit.cover) : Container(color: Colors.grey)),
+          ),
+          // SHOW COUNT BADGE IF MULTIPLE
+          if (_selectedFiles.length > 1)
+            Positioned(
+              right: 10, top: 10,
+              child: Container(
+                padding: const EdgeInsets.all(8),
+                decoration: const BoxDecoration(color: Color(0xFF00E676), shape: BoxShape.circle),
+                child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+              ),
+            )
+        ],
       ),
     );
   }
@@ -336,25 +338,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         content: TextField(
           controller: ipController,
           style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            labelText: "Enter PC IP Address",
-            labelStyle: TextStyle(color: Colors.white54),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white54)),
-            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: const Color(0xFF00E676))),
-          ),
+          decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54)),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Cancel", style: TextStyle(color: Colors.white54)),
-          ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)),
             onPressed: () {
               Navigator.pop(context);
-              if (ipController.text.isNotEmpty) {
-                 service.connectToSpecificIP(ipController.text.trim());
-              }
+              if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim());
             },
             child: const Text("Connect", style: TextStyle(color: Colors.black)),
           )
@@ -364,12 +355,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- SMART GESTURE LAYER (With Mouse Teleport Logic) ---
+// SPATIAL GESTURE LAYER (Keep logic same as before)
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
   final Map<String, dynamic> extraData; 
-
   const SpatialGestureLayer({Key? key, required this.child, this.onDragUpdate, this.extraData = const {}}) : super(key: key);
   @override
   State<SpatialGestureLayer> createState() => _SpatialGestureLayerState();
@@ -378,75 +368,34 @@ class SpatialGestureLayer extends StatefulWidget {
 class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
   Offset _startPos = Offset.zero;
   DateTime _startTime = DateTime.now();
-
   @override
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context, listen: false);
     final size = MediaQuery.of(context).size;
-
     return Listener(
-      onPointerDown: (event) {
-        _startPos = event.position;
-        _startTime = DateTime.now();
-      },
+      onPointerDown: (event) { _startPos = event.position; _startTime = DateTime.now(); },
       onPointerMove: (event) {
-        if (widget.onDragUpdate != null) {
-          widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
-        }
+        if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
+        socketService.sendSwipeData({'x': event.position.dx / size.width, 'y': event.position.dy / size.height, 'isDragging': true, 'action': 'move'});
         
-        socketService.sendSwipeData({
-            'x': event.position.dx / size.width, 
-            'y': event.position.dy / size.height,
-            'isDragging': true,
-            'action': 'move'
-        });
-
-        // --- MOUSE TELEPORT (Windows Only) ---
-        // If mouse hits the edge of the screen, send signal to phone
+        // Mouse Teleport Logic
         if (Platform.isWindows) {
-           // Left Edge Check (Cursor jumps to Device on Left)
            if (event.position.dx < 5) {
-              var leftNode = socketService.activeDevices.firstWhere(
-                  (d) => (d['x'] ?? 0) < 0, 
-                  orElse: () => null
-              );
-              if (leftNode != null) {
-                 socketService.sendMouseTeleport(leftNode['id'], event.delta.dx, event.delta.dy);
-              }
+              var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
+              if (left != null) socketService.sendMouseTeleport(left['id'], event.delta.dx, event.delta.dy);
            }
-           
-           // Right Edge Check (Cursor jumps to Device on Right)
            if (event.position.dx > size.width - 5) {
-              var rightNode = socketService.activeDevices.firstWhere(
-                  (d) => (d['x'] ?? 0) > 0, 
-                  orElse: () => null
-              );
-              if (rightNode != null) {
-                 socketService.sendMouseTeleport(rightNode['id'], event.delta.dx, event.delta.dy);
-              }
+              var right = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) > 0, orElse: () => null);
+              if (right != null) socketService.sendMouseTeleport(right['id'], event.delta.dx, event.delta.dy);
            }
         }
       },
       onPointerUp: (event) {
-        // VELOCITY CALCULATION (For File Throw)
-        final endTime = DateTime.now();
-        final duration = endTime.difference(_startTime).inMilliseconds;
-        
+        final duration = DateTime.now().difference(_startTime).inMilliseconds;
         if (duration < 50) return; 
-
-        final dx = event.position.dx - _startPos.dx;
-        final dy = event.position.dy - _startPos.dy;
-        
-        double vx = (dx / duration) * 1000;
-        double vy = (dy / duration) * 1000;
-
-        socketService.sendSwipeData({
-            'isDragging': false, 
-            'action': 'release',
-            'vx': vx, 
-            'vy': vy,
-            ...widget.extraData
-        });
+        double vx = ((event.position.dx - _startPos.dx) / duration) * 1000;
+        double vy = ((event.position.dy - _startPos.dy) / duration) * 1000;
+        socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
       },
       child: widget.child,
     );
