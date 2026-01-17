@@ -14,8 +14,6 @@ class SpatialRenderer extends StatefulWidget {
 class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderStateMixin {
   VideoPlayerController? _controller;
   AnimationController? _pulseController;
-  
-  // UNIFIED CANVAS ANIMATION
   AnimationController? _entryController;
   Animation<Offset>? _slideAnimation;
 
@@ -23,8 +21,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   void initState() {
     super.initState();
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
-    
-    // Setup Entry Animation
     _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
     _slideAnimation = Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
   }
@@ -32,9 +28,9 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   @override
   void didUpdateWidget(SpatialRenderer oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Trigger animation when new file arrives
     final service = Provider.of<SocketService>(context, listen: false);
-    if (service.lastReceivedFilePath != null && !_entryController!.isCompleted) {
+    // Trigger animation if a NEW file path is detected
+    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != oldWidget.key) {
        _calculateEntryDirection(service);
        _entryController!.forward(from: 0);
     }
@@ -42,15 +38,11 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
 
   void _calculateEntryDirection(SocketService service) {
     if (service.incomingSenderId == null) return;
-    
-    // Find Sender
     var sender = service.activeDevices.firstWhere((d) => d['id'] == service.incomingSenderId, orElse: () => null);
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
 
     if (sender != null && me != null) {
-       double dx = (sender['x'] ?? 0) - (me['x'] ?? 0);
-       // If sender is to my Left (dx < 0), slide from Left (-1.0, 0)
-       // If sender is to my Right (dx > 0), slide from Right (1.0, 0)
+       double dx = (sender['x'] ?? 0).toDouble() - (me['x'] ?? 0).toDouble();
        double startX = dx > 0 ? 1.0 : -1.0; 
        _slideAnimation = Tween<Offset>(begin: Offset(startX, 0), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
     }
@@ -73,10 +65,10 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
 
     return Stack(
       children: [
-        // 1. RADAR MAP
+        // 1. RADAR
         ..._buildNetworkMap(socketService, context),
 
-        // 2. GHOST SWIPE INDICATOR
+        // 2. SWIPE GHOST
         if (swipeData != null && swipeData['isDragging'] == true)
           Positioned(
             left: (swipeData['x'] * MediaQuery.of(context).size.width),
@@ -86,7 +78,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
               child: Transform.rotate(
                 angle: -0.2, 
                 child: Container(
-                  width: 150, height: 150, // BIGGER
+                  width: 150, height: 150,
                   decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(20), border: Border.all(color: const Color(0xFF00E676), width: 2)),
                   child: Center(child: Icon(contentType == 'video' ? Icons.videocam : Icons.image, color: Colors.white, size: 50)),
                 ),
@@ -94,50 +86,62 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 3. UNIFIED CANVAS: FULL SCREEN CONTENT
+        // 3. UNIFIED CANVAS (FULL SCREEN VIEWER)
         if (contentPath != null)
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
-              child: GestureDetector(
-                onTap: () => socketService.openLastFile(),
-                child: Container(
-                  color: Colors.black, 
-                  child: Stack(
-                    children: [
-                      Center(
-                        child: contentType == 'video' 
-                            ? _buildVideoPlayer(File(contentPath))
-                            : Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity),
-                      ),
-                      // CLOSE BUTTON
-                      Positioned(
-                         top: 40, left: 20,
-                         child: IconButton(icon: const Icon(Icons.close, color: Colors.white), onPressed: () {
-                           // Logic to clear view could be added to service, or just let user tap to open
-                         })
-                      ),
-                      Positioned(
-                        bottom: 50, left: 0, right: 0,
-                        child: Center(child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10), decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(30)), child: const Text("Tap to Open Gallery", style: TextStyle(color: Colors.white)))),
-                      )
-                    ],
+              child: Stack(
+                children: [
+                  // BACKGROUND
+                  Container(color: Colors.black),
+
+                  // CONTENT (Native Feel: Zoomable)
+                  Center(
+                    child: contentType == 'video' 
+                        ? _buildVideoPlayer(File(contentPath))
+                        : InteractiveViewer(
+                            minScale: 1.0, maxScale: 4.0,
+                            child: Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity)
+                          ),
                   ),
-                ),
+                  
+                  // CLOSE BUTTON (Top Right)
+                  Positioned(
+                    top: 50, right: 20,
+                    child: FloatingActionButton.small(
+                      backgroundColor: Colors.white24,
+                      onPressed: () => socketService.clearView(),
+                      child: const Icon(Icons.close, color: Colors.white),
+                    ),
+                  ),
+
+                  // BOTTOM ACTION BAR
+                  Positioned(
+                    bottom: 40, left: 0, right: 0,
+                    child: Center(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676), foregroundColor: Colors.black),
+                        onPressed: () => socketService.openLastFile(),
+                        icon: const Icon(Icons.open_in_new),
+                        label: const Text("Open in Gallery App")
+                      ),
+                    ),
+                  )
+                ],
               ),
             ),
           ),
 
-        // 4. MOUSE
+        // 4. MOUSE CURSOR
         if (socketService.showVirtualCursor)
            Positioned(left: socketService.virtualMousePos.dx, top: socketService.virtualMousePos.dy, child: const MouseCursorWidget()),
       ],
     );
   }
-  
-  // ... (Keep _buildNetworkMap, _buildVideoPlayer, MouseCursorWidget exactly as before)
+
+  // --- HELPERS ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
-    // (Copy existing logic from previous response)
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
     double myX = (me['x'] ?? 0).toDouble();
@@ -154,7 +158,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
       return Positioned(left: screenX - 30, top: screenY - 30, child: Column(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.white10, shape: BoxShape.circle, border: Border.all(color: Colors.white24)), child: Icon(device['type'] == 'mobile' ? Icons.smartphone : Icons.computer, color: Colors.white70, size: 20)), const SizedBox(height: 4), Text(device['name'].toString().split(' [')[0], style: const TextStyle(color: Colors.white30, fontSize: 10))]));
     }).toList();
   }
-  
+
   Widget _buildVideoPlayer(File file) {
     if (_controller == null || _controller?.dataSource != file.path) {
         _controller?.dispose();
