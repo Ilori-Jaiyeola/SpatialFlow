@@ -10,21 +10,25 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  socket_io_client: ^2.0.0
+  # Core Logic
   provider: ^6.0.0
+  socket_io_client: ^2.0.0
   device_info_plus: ^9.0.0
-  image_picker: ^1.0.4
-  video_player: ^2.8.1
+  
+  # Media & Files
+  video_player: ^2.7.0
+  image_picker: ^1.0.0
   path_provider: ^2.1.2
-  flutter_background_service: ^5.0.0
-  flutter_local_notifications: ^17.0.0
-  wakelock_plus: ^1.1.0  # <--- KEEPS CONNECTION ALIVE
-  open_filex: ^4.3.2     # <--- OPENS FILES ON CLICK
+  open_filex: ^4.3.2         # Opens files on tap
+  gal: ^2.2.0                # Save to Gallery (Visible)
   permission_handler: ^11.0.0
-  desktop_drop: ^0.4.4           # Drag from Windows Explorer
-  gal: ^2.2.0                    # Save to Gallery (Visible)
+  
+  # System & UI
+  wakelock_plus: ^1.1.0      # Keeps screen alive
+  desktop_drop: ^0.4.4       # Drag from Windows Explorer
   flutter_background_service: ^5.0.0 # Keep Android Alive
   
+
 
 
 
