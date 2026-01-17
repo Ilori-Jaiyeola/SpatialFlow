@@ -14,7 +14,7 @@ const UDP_PORT = 8888;
 const TCP_PORT = 3000;
 
 // =========================================================
-// 1. OMNI-BROADCASTING (Fixes "Scanning..." Issue)
+// 1. OMNI-BROADCASTING (Connection Stability)
 // =========================================================
 function getBroadcastAddresses() {
     const interfaces = os.networkInterfaces();
@@ -44,19 +44,18 @@ setInterval(() => {
         const message = Buffer.from(`SPATIAL_ANNOUNCE|${addr.ip}`);
         try {
             udpSocket.send(message, 0, message.length, UDP_PORT, addr.broadcast);
+            udpSocket.send(message, 0, message.length, UDP_PORT, "255.255.255.255");
         } catch (e) {}
     });
 }, 1000);
 
 // =========================================================
-// 2. VECTOR MATH (The "Brain" for Swipes)
+// 2. VECTOR MATH (Smart Swipe Logic)
 // =========================================================
 let devices = [];
 
 function findTargetDevice(sender, swipeData) {
     const { velocityX, velocityY } = swipeData;
-    
-    // Normalize swipe vector
     const magnitude = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
     if (magnitude === 0) return null;
     
@@ -69,41 +68,36 @@ function findTargetDevice(sender, swipeData) {
     devices.forEach(target => {
         if (target.id === sender.id) return; 
 
-        // Vector from Sender -> Target
         const dx = target.x - sender.x;
         const dy = target.y - sender.y;
-        
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist === 0) return;
         
         const normDx = dx / dist;
         const normDy = dy / dist;
 
-        // Dot Product (How well does the swipe align with the target?)
         const dotProduct = (normVx * normDx) + (normVy * normDy);
 
-        // Threshold: > 0.5 means roughly in the right direction
         if (dotProduct > 0.5 && dotProduct > maxDotProduct) {
             maxDotProduct = dotProduct;
             bestTarget = target;
         }
     });
-
     return bestTarget;
 }
 
 // =========================================================
-// 3. SOCKET LOGIC (Connection + File Relay)
+// 3. SOCKET LOGIC (The Brain)
 // =========================================================
 io.on('connection', (socket) => {
     console.log(`Node Connected: ${socket.id}`);
 
-    // --- A. REGISTRATION ---
+    // --- A. REGISTRATION & TOPOLOGY ---
     socket.on('register', (info) => {
         const clientIp = socket.handshake.address.replace('::ffff:', '');
-        devices = devices.filter(d => d.ip !== clientIp); // Remove duplicates
+        devices = devices.filter(d => d.ip !== clientIp);
 
-        // Auto-assign Slots: Center(0,0), Left(-1,0), Right(1,0)
+        // Auto-assign: Center(0,0), Left(-1,0), Right(1,0), Top(0,-1)
         const newDevice = {
             id: socket.id,
             name: info.name,
@@ -114,13 +108,13 @@ io.on('connection', (socket) => {
         };
         
         devices.push(newDevice);
-        console.log(`Device Registered: ${newDevice.name} at (${newDevice.x}, ${newDevice.y})`);
+        console.log(`Device Registered: ${newDevice.name} at [${newDevice.x}, ${newDevice.y}]`);
         
         socket.emit('register_confirm', { id: socket.id });
         io.emit('device_list', devices);
     });
 
-    // --- B. SWIPE & TRANSFER LOGIC ---
+    // --- B. SWIPE & FILE TRANSFER ---
     socket.on('swipe_event', (data) => {
         const sender = devices.find(d => d.id === socket.id);
         if (!sender) return;
@@ -128,31 +122,37 @@ io.on('connection', (socket) => {
         const velocityX = data.vx || 0;
         const velocityY = data.vy || 0;
 
-        // Only trigger transfer on HARD swipes (Velocity > 100)
+        // Hard Swipe = Transfer
         if (data.action === 'release' && (Math.abs(velocityX) > 100 || Math.abs(velocityY) > 100)) {
             const target = findTargetDevice(sender, { velocityX, velocityY });
 
             if (target) {
-                console.log(`Swipe Directed: ${sender.name} -> ${target.name}`);
-                
-                // 1. Show Ghost Hand on Target
+                console.log(`Routed Swipe: ${sender.name} -> ${target.name}`);
                 io.to(target.id).emit('swipe_event', { ...data, senderId: sender.id });
-
-                // 2. Request File from Sender
                 socket.emit('transfer_request', { targetId: target.id }); 
-            } else {
-                console.log("Swipe detected, but no target in that direction.");
             }
         } else {
-            // Soft drag (Visual only)
+            // Soft Drag = Visual Ghost Hand
             socket.broadcast.emit('swipe_event', data);
         }
     });
 
-    // --- C. FILE RELAY (The Missing Piece) ---
     socket.on('file_payload', (data) => {
-        console.log(`Relaying file (${data.fileName}) to ${data.targetId}`);
+        console.log(`Relaying File (${data.fileName}) -> ${data.targetId}`);
         io.to(data.targetId).emit('content_transfer', data);
+    });
+
+    // --- C. UNIFIED CANVAS: SHARED CLIPBOARD ---
+    socket.on('clipboard_sync', (data) => {
+        console.log(`Clipboard Sync from ${socket.id}`);
+        // Broadcast to EVERYONE (Universal Clipboard)
+        socket.broadcast.emit('clipboard_sync', { text: data.text });
+    });
+
+    // --- D. UNIFIED CANVAS: MOUSE TELEPORT ---
+    socket.on('mouse_teleport', (data) => {
+        // Relay cursor movement directly to target
+        io.to(data.targetId).emit('mouse_teleport', data);
     });
 
     socket.on('disconnect', () => {
@@ -163,5 +163,5 @@ io.on('connection', (socket) => {
 
 const addrs = getBroadcastAddresses().map(a => a.ip).join(', ');
 http.listen(TCP_PORT, '0.0.0.0', () => {
-    console.log(`NEURAL CORE ONLINE. Listening on: [${addrs}]`);
+    console.log(`NEURAL CORE v2.5 ONLINE. Listening on: [${addrs}]`);
 });
