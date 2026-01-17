@@ -35,53 +35,112 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
     final swipeData = socketService.incomingSwipeData;
-    
-    // --- 1. VISUALIZE NETWORK MAP (Automatic) ---
-    // This draws the little dots showing where other devices are relative to you
-    List<Widget> networkMap = _buildNetworkMap(socketService, context);
+    final content = socketService.incomingContent;
+    final contentType = socketService.incomingContentType;
 
     return Stack(
       children: [
-        ...networkMap,
+        // --- 1. NETWORK RADAR (Visualizes Device Topology) ---
+        ..._buildNetworkMap(socketService, context),
 
-        // --- 2. GHOST HAND (Incoming Swipe) ---
+        // --- 2. GHOST HAND (The Swipe Indicator) ---
         if (swipeData != null && swipeData['isDragging'] == true)
           Positioned(
             left: (swipeData['x'] * MediaQuery.of(context).size.width),
             top: (swipeData['y'] * MediaQuery.of(context).size.height),
             child: FadeTransition(
               opacity: _pulseController!,
-              child: Column(
-                children: [
-                   Container(
-                    width: 60, height: 60,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: Colors.white.withOpacity(0.2),
-                      boxShadow: [
-                        BoxShadow(color: const Color(0xFF00E676).withOpacity(0.6), blurRadius: 30, spreadRadius: 5)
-                      ]
-                    ),
-                    child: const Icon(Icons.touch_app, color: Colors.white, size: 30),
+              child: Transform.rotate(
+                angle: -0.2, // Slight tilt for dynamic feel
+                child: Container(
+                  width: 120,
+                  height: 120,
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: const Color(0xFF00E676), width: 2),
+                    boxShadow: [
+                      BoxShadow(color: const Color(0xFF00E676).withOpacity(0.4), blurRadius: 20, spreadRadius: 2)
+                    ]
                   ),
-                  // Show who is swiping
-                  Container(
-                    margin: const EdgeInsets.only(top: 8),
-                    padding: const EdgeInsets.all(4),
-                    decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(5)),
-                    child: Text("Incoming Signal", style: const TextStyle(color: Colors.white, fontSize: 10)),
-                  )
-                ],
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(18),
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        // Background Grid Pattern
+                        Opacity(
+                          opacity: 0.1,
+                          child: GridView.count(
+                            crossAxisCount: 4,
+                            children: List.generate(16, (_) => Container(
+                              margin: const EdgeInsets.all(2),
+                              color: Colors.white,
+                            )),
+                          ),
+                        ),
+                        // The Content Icon
+                        Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              _getIconForType(socketService.incomingContentType), 
+                              color: Colors.white, 
+                              size: 40
+                            ),
+                            const SizedBox(height: 5),
+                            const Text(
+                              "INCOMING", 
+                              style: TextStyle(
+                                color: Color(0xFF00E676), 
+                                fontSize: 10, 
+                                fontWeight: FontWeight.bold,
+                                letterSpacing: 1.5
+                              )
+                            )
+                          ],
+                        )
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
           ),
+
+        // --- 3. RECEIVED MEDIA (The Actual File) ---
+        
+        // VIDEO PLAYER
+        if (contentType == 'video' && content != null)
+           _buildVideoPlayer(socketService), 
+           
+        // IMAGE VIEWER
+        if (contentType == 'image' && content != null)
+          Center(
+            child: Container(
+              width: 300, height: 300,
+              decoration: BoxDecoration(
+                border: Border.all(color: const Color(0xFF00E676), width: 2),
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 30)],
+                image: DecorationImage(
+                   image: FileImage(File(content)), 
+                   fit: BoxFit.cover
+                )
+              ),
+            ),
+          )
       ],
     );
   }
 
+  // --- HELPER: RADAR MAP ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
-    // This finds MY position
-    var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
+    // 1. Find MY position in the server's list
+    var me = service.activeDevices.firstWhere(
+      (d) => d['id'] == service.myId, 
+      orElse: () => null
+    );
     if (me == null) return [];
 
     double myX = (me['x'] ?? 0).toDouble();
@@ -91,26 +150,39 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
     final centerY = size.height / 2;
 
     return service.activeDevices.map<Widget>((device) {
-      if (device['id'] == service.myId) return const SizedBox(); // Don't draw myself
+      if (device['id'] == service.myId) return const SizedBox(); // Don't draw self
 
-      // Calculate relative position
+      // 2. Calculate Relative Position
       double relX = (device['x'] ?? 0).toDouble() - myX;
       double relY = (device['y'] ?? 0).toDouble() - myY;
 
-      // Scale it for the screen (1 unit = 150 pixels)
+      // 3. Map to Screen Coordinates (1 Unit = 150 Pixels)
       double screenX = centerX + (relX * 150);
       double screenY = centerY + (relY * 150);
 
-      // Clamp to screen edges so they don't disappear
-      screenX = screenX.clamp(20.0, size.width - 20.0);
-      screenY = screenY.clamp(100.0, size.height - 100.0);
+      // Clamp to keep onscreen
+      screenX = screenX.clamp(40.0, size.width - 40.0);
+      screenY = screenY.clamp(120.0, size.height - 120.0);
 
       return Positioned(
-        left: screenX - 25,
-        top: screenY - 25,
+        left: screenX - 30, // Center the widget
+        top: screenY - 30,
         child: Column(
           children: [
-            const Icon(Icons.router, color: Colors.white54),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.white10,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white24)
+              ),
+              child: Icon(
+                device['type'] == 'mobile' ? Icons.smartphone : Icons.computer, 
+                color: Colors.white70,
+                size: 20
+              ),
+            ),
+            const SizedBox(height: 4),
             Text(
               device['name'].toString().split(' [')[0], // Show simple name
               style: const TextStyle(color: Colors.white30, fontSize: 10)
@@ -119,5 +191,56 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
         ),
       );
     }).toList();
+  }
+
+  // --- HELPER: VIDEO PLAYER ---
+  Widget _buildVideoPlayer(SocketService socketService) {
+    // Initialize logic
+    if (_controller == null || _controller?.dataSource != socketService.incomingContent) {
+        _controller?.dispose();
+        _controller = VideoPlayerController.file(File(socketService.incomingContent))
+          ..initialize().then((_) {
+            setState(() {});
+            _controller!.play();
+            _controller!.setLooping(true);
+          });
+    }
+    
+    // Sync Logic (Snap to timestamp if drifting)
+    if (_controller!.value.isInitialized) {
+       int remoteTime = socketService.currentVideoTimestamp;
+       int localTime = _controller!.value.position.inMilliseconds;
+       if ((remoteTime - localTime).abs() > 500) {
+         _controller!.seekTo(Duration(milliseconds: remoteTime));
+       }
+    }
+
+    if (!_controller!.value.isInitialized) {
+      return const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)));
+    }
+
+    return Center(
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFF00E676), width: 1),
+          boxShadow: const [BoxShadow(color: Colors.black, blurRadius: 50)],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(19),
+          child: AspectRatio(
+            aspectRatio: _controller!.value.aspectRatio,
+            child: VideoPlayer(_controller!),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // --- HELPER: ICON TYPE ---
+  IconData _getIconForType(String? type) {
+    if (type == 'video') return Icons.videocam;
+    if (type == 'image') return Icons.image;
+    return Icons.insert_drive_file;
   }
 }
