@@ -21,7 +21,11 @@ dependencies:
   wakelock_plus: ^1.1.0  # <--- KEEPS CONNECTION ALIVE
   open_filex: ^4.3.2     # <--- OPENS FILES ON CLICK
   permission_handler: ^11.0.0
+  desktop_drop: ^0.4.4           # Drag from Windows Explorer
+  gal: ^2.2.0                    # Save to Gallery (Visible)
+  flutter_background_service: ^5.0.0 # Keep Android Alive
   
+
 
 
 
