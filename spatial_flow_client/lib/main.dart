@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import 'dart:io';
 import 'dart:ui'; 
 import 'package:wakelock_plus/wakelock_plus.dart'; 
-import 'package:desktop_drop/desktop_drop.dart'; // NATIVE DRAG AND DROP
+import 'package:desktop_drop/desktop_drop.dart'; 
 import 'services/socket_service.dart';
 import 'widgets/spatial_renderer.dart';
 import 'widgets/glass_box.dart'; 
@@ -65,24 +65,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // --- NATIVE DRAG & DROP HANDLER ---
   void _onFilesDropped(List<XFile> files) {
     if (files.isEmpty) return;
-    
-    // Determine type based on extension
     String ext = files.first.path.split('.').last.toLowerCase();
     String type = (['mp4', 'mov', 'avi'].contains(ext)) ? 'video' : 'image';
 
     setState(() {
       _selectedFiles = files.map((x) => File(x.path)).toList();
       _fileType = type;
-      _dragPosition = const Offset(100, 300); // Reset position
+      _dragPosition = const Offset(100, 300); 
     });
     
-    if (type == 'video') {
-       _initVideoPlayer(_selectedFiles.first);
-    }
-    
+    if (type == 'video') _initVideoPlayer(_selectedFiles.first);
     Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
@@ -103,9 +97,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _fileType = type;
         _dragPosition = const Offset(50, 200);
       });
-      
       if (type == 'video') _initVideoPlayer(_selectedFiles.first);
-      
       Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
     }
   }
@@ -125,7 +117,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context);
 
-    // WRAP EVERYTHING IN DROP TARGET
     return DropTarget(
       onDragDone: (details) => _onFilesDropped(details.files),
       child: SpatialGestureLayer(
@@ -159,7 +150,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               _buildBackground(),
 
-              // 1. DASHBOARD UI
+              // UI LAYER
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
@@ -185,15 +176,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // 2. DRAGGABLE PREVIEW (NOW SCALABLE)
+              // SENDER PREVIEW (Fixed Aspect Ratio)
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
                   top: _dragPosition.dy,
-                  child: _buildDraggableContent(context), // PASS CONTEXT
+                  child: _buildDraggableContent(context), 
                 ),
 
-              // 3. UNIFIED CANVAS RENDERER
+              // RECEIVER LAYER (Full Screen)
               const SpatialRenderer(),
             ],
           ),
@@ -202,7 +193,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // ... (Keep _buildBackground, _buildGlassStatusCard, _buildGlassDeviceTile same as before)
   Widget _buildBackground() => Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)])));
   
   Widget _buildGlassStatusCard(SocketService service) { 
@@ -241,26 +231,29 @@ class _DashboardScreenState extends State<DashboardScreen> {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
 
-  // --- UPDATED: RESIZABLE CONTENT ---
+  // --- FIXED: DYNAMIC ASPECT RATIO PREVIEW ---
   Widget _buildDraggableContent(BuildContext context) {
-    // Calculate size based on screen to ensure visibility
-    double w = MediaQuery.of(context).size.width * 0.6;
-    double h = MediaQuery.of(context).size.width * 0.6;
+    // Max Width constraint
+    double w = MediaQuery.of(context).size.width * 0.7;
     
     return Container(
-      width: w, height: h,
+      width: w, 
+      constraints: const BoxConstraints(minHeight: 200, maxHeight: 400),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(20),
         boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
         border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
+        color: Colors.black, // Background in case aspect ratio has gaps
       ),
       child: Stack(
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
-                ? VideoPlayer(_senderVideoController!)
-                : (_selectedFiles.isNotEmpty ? Image.file(_selectedFiles.first, fit: BoxFit.cover) : Container(color: Colors.grey)),
+                ? AspectRatio(aspectRatio: _senderVideoController!.value.aspectRatio, child: VideoPlayer(_senderVideoController!))
+                : (_selectedFiles.isNotEmpty 
+                    ? Image.file(_selectedFiles.first, fit: BoxFit.contain) 
+                    : Container(color: Colors.grey)),
           ),
           if (_selectedFiles.length > 1)
             Positioned(right: 10, top: 10, child: Container(padding: const EdgeInsets.all(8), decoration: const BoxDecoration(color: Color(0xFF00E676), shape: BoxShape.circle), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold))))
@@ -277,10 +270,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]);
   }
   
-  void _showManualConnectDialog(BuildContext context, SocketService service) { /* Keep existing logic */ }
+  void _showManualConnectDialog(BuildContext context, SocketService service) { 
+      // (Same as before)
+      TextEditingController ipController = TextEditingController(text: "192.168.");
+      showDialog(context: context, builder: (context) => AlertDialog(backgroundColor: const Color(0xFF1E1E1E), title: const Text("Manual Connection", style: TextStyle(color: Colors.white)), content: TextField(controller: ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54))), actions: [ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)), onPressed: () { Navigator.pop(context); if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim()); }, child: const Text("Connect", style: TextStyle(color: Colors.black)))]));
+  }
 }
 
-// SPATIAL GESTURE LAYER (Keep Logic)
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
