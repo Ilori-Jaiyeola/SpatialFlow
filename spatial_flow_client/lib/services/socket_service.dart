@@ -8,7 +8,7 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
-import 'package:gal/gal.dart'; // VISIBLE GALLERY SAVER
+import 'package:gal/gal.dart'; 
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
@@ -30,7 +30,7 @@ class SocketService with ChangeNotifier {
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
-  String? _incomingSenderId; // To know which direction it came from
+  String? _incomingSenderId; 
 
   // UNIFIED CANVAS (Mouse)
   Offset _virtualMousePos = const Offset(200, 400);
@@ -88,7 +88,7 @@ class SocketService with ChangeNotifier {
       'reconnection': true,
       'reconnectionAttempts': 9999,
       'reconnectionDelay': 500,
-      'maxHttpBufferSize': 1e8 // 100MB Limit
+      'maxHttpBufferSize': 1e8 
     });
 
     if (!_socket!.connected) _socket!.connect();
@@ -125,7 +125,7 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // --- SENDING (Standard) ---
+    // --- SENDING ---
     _socket!.on('transfer_request', (data) async {
        String targetId = data['targetId'];
        if (_stagedFiles.isNotEmpty) {
@@ -139,7 +139,7 @@ class SocketService with ChangeNotifier {
              
              _socket!.emit('file_payload', {
                'targetId': targetId,
-               'senderId': _myId, // Send my ID so receiver knows direction
+               'senderId': _myId, 
                'fileData': base64Data,
                'fileName': file.path.split('/').last,
                'fileType': _stagedFileType
@@ -159,7 +159,7 @@ class SocketService with ChangeNotifier {
        }
     });
 
-    // --- RECEIVING (Gallery & Sort) ---
+    // --- RECEIVING ---
     _socket!.on('content_transfer', (data) async {
        _transferStatus = "RECEIVING...";
        notifyListeners();
@@ -172,34 +172,28 @@ class SocketService with ChangeNotifier {
          
          Uint8List bytes = base64Decode(base64Data);
          
-         // 1. Save to Temporary (Immediate View)
          final tempDir = await getTemporaryDirectory();
          final tempFile = File('${tempDir.path}/$fileName');
          await tempFile.writeAsBytes(bytes);
 
-         // 2. Save to Gallery (If Mobile)
+         // Save to Gallery/Downloads
          if (Platform.isAndroid || Platform.isIOS) {
              try {
-                // This puts it in the REAL Gallery
                 await Gal.putImage(tempFile.path); 
                 if (type == 'video') await Gal.putVideo(tempFile.path);
-                print("Saved to Gallery");
-             } catch (e) {
-                print("Gallery Error (might be permission): $e");
-             }
+             } catch (e) { print("Gallery Error: $e"); }
          } else {
-             // Windows: Save to Downloads/SpatialFlow
-             final downloadsDir = await getApplicationDocumentsDirectory(); // Or Downloads
+             final downloadsDir = await getApplicationDocumentsDirectory(); 
              final saveDir = Directory('${downloadsDir.path}/SpatialFlow');
              if (!await saveDir.exists()) await saveDir.create(recursive: true);
              final permFile = File('${saveDir.path}/$fileName');
              await permFile.writeAsBytes(bytes);
          }
 
-         // 3. Update UI
+         // Update UI
          _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
-         _incomingSenderId = senderId; // Store sender to calculate animation direction
+         _incomingSenderId = senderId; 
          _transferStatus = "RECEIVED";
          notifyListeners();
 
@@ -224,6 +218,14 @@ class SocketService with ChangeNotifier {
   }
 
   // --- ACTIONS ---
+  
+  // NEW: CLEAR VIEW FOR CLOSE BUTTON
+  void clearView() {
+    _lastReceivedFilePath = null;
+    _incomingContentType = null;
+    notifyListeners();
+  }
+
   void broadcastContent(List<File> files, String type) {
     _stagedFiles = files;
     _stagedFileType = type;
