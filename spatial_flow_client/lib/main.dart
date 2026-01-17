@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:video_player/video_player.dart';
-import 'dart:io';
-import 'dart:ui'; // Needed for ImageFilter
+import 'package:flutter/services.dart'; // Required for Clipboard
+import 'dart:io'; // Required for Platform checks
+import 'dart:ui'; 
 import 'services/socket_service.dart';
 import 'widgets/spatial_renderer.dart';
 import 'widgets/glass_box.dart'; 
@@ -52,7 +53,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void initState() {
     super.initState();
-    // Start auto-discovery immediately
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -86,7 +86,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _senderVideoController!.setVolume(0);
           });
       }
-      // Stage the file in the service so it's ready to send on swipe
       Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFile!, type);
     }
   }
@@ -162,7 +161,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: _buildDraggableContent(),
               ),
 
-            // --- LAYER 3: RECEIVER GHOST ---
+            // --- LAYER 3: RECEIVER GHOST & CURSOR ---
             const SpatialRenderer(),
           ],
         ),
@@ -215,7 +214,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   const Text("NEURAL CORE", style: TextStyle(color: Colors.white70, fontSize: 10, letterSpacing: 1.5)),
                   const SizedBox(height: 5),
-                  // --- CLICKABLE STATUS FOR MANUAL CONNECT ---
                   GestureDetector(
                     onTap: () {
                       if (!service.isConnected) {
@@ -234,7 +232,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       )
                     ),
                   ),
+                  if (service.transferStatus != "IDLE")
+                    Text(service.transferStatus, style: const TextStyle(color: Colors.cyanAccent, fontSize: 10))
                 ],
+              ),
+              const Spacer(),
+              // --- NEW: CLIPBOARD PUSH BUTTON ---
+              IconButton(
+                icon: const Icon(Icons.copy_all, color: Colors.white70),
+                tooltip: "Push Clipboard",
+                onPressed: () async {
+                  ClipboardData? data = await Clipboard.getData(Clipboard.kTextPlain);
+                  if (data != null && data.text != null) {
+                    service.syncClipboard(data.text!);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text("Clipboard Pushed to Network!"), backgroundColor: Color(0xFF00E676))
+                    );
+                  }
+                },
               )
             ],
           ),
@@ -311,7 +326,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- MANUAL CONNECT DIALOG ---
   void _showManualConnectDialog(BuildContext context, SocketService service) {
     TextEditingController ipController = TextEditingController(text: "192.168.");
     showDialog(
@@ -339,7 +353,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
             onPressed: () {
               Navigator.pop(context);
               if (ipController.text.isNotEmpty) {
-                 // Force the connection to the IP you typed
                  service.connectToSpecificIP(ipController.text.trim());
               }
             },
@@ -351,7 +364,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- SMART GESTURE LAYER (With Velocity) ---
+// --- SMART GESTURE LAYER (With Mouse Teleport Logic) ---
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -364,7 +377,6 @@ class SpatialGestureLayer extends StatefulWidget {
 
 class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
   Offset _startPos = Offset.zero;
-  Offset _lastPos = Offset.zero;
   DateTime _startTime = DateTime.now();
 
   @override
@@ -375,7 +387,6 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     return Listener(
       onPointerDown: (event) {
         _startPos = event.position;
-        _lastPos = event.position;
         _startTime = DateTime.now();
       },
       onPointerMove: (event) {
@@ -383,17 +394,41 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
           widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
         }
         
-        // Broadcast dragging for visual effect
         socketService.sendSwipeData({
             'x': event.position.dx / size.width, 
             'y': event.position.dy / size.height,
             'isDragging': true,
             'action': 'move'
         });
-        _lastPos = event.position;
+
+        // --- MOUSE TELEPORT (Windows Only) ---
+        // If mouse hits the edge of the screen, send signal to phone
+        if (Platform.isWindows) {
+           // Left Edge Check (Cursor jumps to Device on Left)
+           if (event.position.dx < 5) {
+              var leftNode = socketService.activeDevices.firstWhere(
+                  (d) => (d['x'] ?? 0) < 0, 
+                  orElse: () => null
+              );
+              if (leftNode != null) {
+                 socketService.sendMouseTeleport(leftNode['id'], event.delta.dx, event.delta.dy);
+              }
+           }
+           
+           // Right Edge Check (Cursor jumps to Device on Right)
+           if (event.position.dx > size.width - 5) {
+              var rightNode = socketService.activeDevices.firstWhere(
+                  (d) => (d['x'] ?? 0) > 0, 
+                  orElse: () => null
+              );
+              if (rightNode != null) {
+                 socketService.sendMouseTeleport(rightNode['id'], event.delta.dx, event.delta.dy);
+              }
+           }
+        }
       },
       onPointerUp: (event) {
-        // CALCULATE VELOCITY (The "Throw")
+        // VELOCITY CALCULATION (For File Throw)
         final endTime = DateTime.now();
         final duration = endTime.difference(_startTime).inMilliseconds;
         
@@ -402,7 +437,6 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         final dx = event.position.dx - _startPos.dx;
         final dy = event.position.dy - _startPos.dy;
         
-        // Pixels per second
         double vx = (dx / duration) * 1000;
         double vy = (dy / duration) * 1000;
 
