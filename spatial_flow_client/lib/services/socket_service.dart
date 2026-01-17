@@ -7,51 +7,52 @@ import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart'; 
+import 'package:open_filex/open_filex.dart';
+import 'package:gal/gal.dart'; // VISIBLE GALLERY SAVER
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // --- STATE VARIABLES ---
+  // STATE
   bool _isConnected = false;
-  bool _isScanning = false; // <--- ADDED BACK
+  bool _isScanning = false;
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
-  // --- MULTI-FILE STAGING ---
+  // MULTI-FILE
   List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
-  // --- INCOMING DATA ---
+  // INCOMING
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
+  String? _incomingSenderId; // To know which direction it came from
 
-  // --- UNIFIED CANVAS ---
+  // UNIFIED CANVAS (Mouse)
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // --- GETTERS ---
+  // GETTERS
   bool get isConnected => _isConnected;
-  bool get isScanning => _isScanning; // <--- ADDED BACK (Fixes main.dart error)
+  bool get isScanning => _isScanning;
   bool get isConferenceMode => _isConferenceMode;
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
   String? get lastReceivedFilePath => _lastReceivedFilePath; 
   String? get incomingContentType => _incomingContentType;
+  String? get incomingSenderId => _incomingSenderId;
   String get transferStatus => _transferStatus;
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
 
-  // --- 1. DISCOVERY & CONNECTION ---
+  // --- 1. DISCOVERY ---
   void startDiscovery() async {
     if (_isConnected) return;
-    
-    // Set scanning state
     _isScanning = true;
     notifyListeners();
 
@@ -74,7 +75,7 @@ class SocketService with ChangeNotifier {
           }
         });
       });
-    } catch (e) { print("UDP Error: $e"); }
+    } catch (e) { print("UDP: $e"); }
   }
 
   void connectToSpecificIP(String ip) async {
@@ -87,7 +88,7 @@ class SocketService with ChangeNotifier {
       'reconnection': true,
       'reconnectionAttempts': 9999,
       'reconnectionDelay': 500,
-      'maxHttpBufferSize': 1e8 // 100MB
+      'maxHttpBufferSize': 1e8 // 100MB Limit
     });
 
     if (!_socket!.connected) _socket!.connect();
@@ -95,7 +96,7 @@ class SocketService with ChangeNotifier {
     _socket!.onConnect((_) async {
       print('Connected to Neural Core');
       _isConnected = true;
-      _isScanning = false; // <--- Stop scanning when connected
+      _isScanning = false;
       _startHeartbeat(); 
       
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
@@ -115,12 +116,8 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('register_confirm', (data) => _myId = data['id']);
     _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
-    _socket!.on('disconnect', (_) { 
-        _isConnected = false; 
-        notifyListeners(); 
-    });
+    _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
 
-    // --- SWIPE GHOST ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
@@ -128,10 +125,9 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // --- SENDING LOGIC (BATCH PROCESSING) ---
+    // --- SENDING (Standard) ---
     _socket!.on('transfer_request', (data) async {
        String targetId = data['targetId'];
-       
        if (_stagedFiles.isNotEmpty) {
          _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
          notifyListeners();
@@ -143,21 +139,19 @@ class SocketService with ChangeNotifier {
              
              _socket!.emit('file_payload', {
                'targetId': targetId,
+               'senderId': _myId, // Send my ID so receiver knows direction
                'fileData': base64Data,
                'fileName': file.path.split('/').last,
                'fileType': _stagedFileType
              });
-             await Future.delayed(const Duration(milliseconds: 300)); 
+             await Future.delayed(const Duration(milliseconds: 200)); 
            }
-
-           _transferStatus = "SENT ALL";
+           _transferStatus = "SENT";
            notifyListeners();
-           
            Future.delayed(const Duration(seconds: 2), () {
              _transferStatus = "IDLE";
              notifyListeners();
            });
-
          } catch (e) {
            _transferStatus = "ERROR";
            notifyListeners();
@@ -165,7 +159,7 @@ class SocketService with ChangeNotifier {
        }
     });
 
-    // --- RECEIVING LOGIC (AUTO-SORTING) ---
+    // --- RECEIVING (Gallery & Sort) ---
     _socket!.on('content_transfer', (data) async {
        _transferStatus = "RECEIVING...";
        notifyListeners();
@@ -174,21 +168,38 @@ class SocketService with ChangeNotifier {
          String base64Data = data['fileData'];
          String fileName = data['fileName'];
          String type = data['fileType'];
+         String senderId = data['senderId'] ?? "";
          
          Uint8List bytes = base64Decode(base64Data);
          
-         final appDir = await getApplicationDocumentsDirectory();
-         String subFolder = (type == 'video') ? 'SpatialVideos' : 'SpatialImages';
-         final saveDir = Directory('${appDir.path}/$subFolder');
-         if (!await saveDir.exists()) {
-           await saveDir.create(recursive: true);
+         // 1. Save to Temporary (Immediate View)
+         final tempDir = await getTemporaryDirectory();
+         final tempFile = File('${tempDir.path}/$fileName');
+         await tempFile.writeAsBytes(bytes);
+
+         // 2. Save to Gallery (If Mobile)
+         if (Platform.isAndroid || Platform.isIOS) {
+             try {
+                // This puts it in the REAL Gallery
+                await Gal.putImage(tempFile.path); 
+                if (type == 'video') await Gal.putVideo(tempFile.path);
+                print("Saved to Gallery");
+             } catch (e) {
+                print("Gallery Error (might be permission): $e");
+             }
+         } else {
+             // Windows: Save to Downloads/SpatialFlow
+             final downloadsDir = await getApplicationDocumentsDirectory(); // Or Downloads
+             final saveDir = Directory('${downloadsDir.path}/SpatialFlow');
+             if (!await saveDir.exists()) await saveDir.create(recursive: true);
+             final permFile = File('${saveDir.path}/$fileName');
+             await permFile.writeAsBytes(bytes);
          }
 
-         final newFile = File('${saveDir.path}/$fileName');
-         await newFile.writeAsBytes(bytes);
-
-         _lastReceivedFilePath = newFile.path;
+         // 3. Update UI
+         _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
+         _incomingSenderId = senderId; // Store sender to calculate animation direction
          _transferStatus = "RECEIVED";
          notifyListeners();
 
@@ -199,7 +210,6 @@ class SocketService with ChangeNotifier {
        }
     });
 
-    // --- UNIFIED CANVAS LISTENERS ---
     _socket!.on('clipboard_sync', (data) {
        Clipboard.setData(ClipboardData(text: data['text']));
     });
@@ -214,7 +224,6 @@ class SocketService with ChangeNotifier {
   }
 
   // --- ACTIONS ---
-
   void broadcastContent(List<File> files, String type) {
     _stagedFiles = files;
     _stagedFileType = type;
@@ -244,10 +253,9 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
-  // FIXED: Added check for null safety
   void openLastFile() {
     if (_lastReceivedFilePath != null) {
-      OpenFilex.open(_lastReceivedFilePath!); // <--- ADDED "!"
+      OpenFilex.open(_lastReceivedFilePath!);
     }
   }
 
