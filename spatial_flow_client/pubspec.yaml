@@ -20,7 +20,8 @@ dependencies:
   flutter_local_notifications: ^17.0.0
   wakelock_plus: ^1.1.0  # <--- KEEPS CONNECTION ALIVE
   open_filex: ^4.3.2     # <--- OPENS FILES ON CLICK
-  permission_handler: ^11.0.0  permission_handler: ^11.0.0
+  permission_handler: ^11.0.0
   
+
 
 
