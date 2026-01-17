@@ -1,11 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
-import 'dart:typed_data'; // Needed for file bytes
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:path_provider/path_provider.dart'; // Ensure this is in pubspec.yaml
+import 'package:path_provider/path_provider.dart';
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
@@ -16,17 +16,14 @@ class SocketService with ChangeNotifier {
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
-  // --- STAGING AREA (For the file you want to send) ---
   File? _stagedFile; 
   String? _stagedFileType;
 
-  // --- INCOMING DATA (From other devices) ---
   Map<String, dynamic>? _incomingSwipeData;
-  dynamic _incomingContent; // Will be a File path string
+  dynamic _incomingContent;
   String? _incomingContentType;
-  int _currentVideoTimestamp = 0;
+  String _transferStatus = "IDLE"; // <--- NEW STATUS TRACKER
 
-  // --- GETTERS ---
   bool get isScanning => _isScanning;
   bool get isConnected => _isConnected;
   bool get isConferenceMode => _isConferenceMode;
@@ -35,11 +32,8 @@ class SocketService with ChangeNotifier {
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
   dynamic get incomingContent => _incomingContent;
   String? get incomingContentType => _incomingContentType;
-  int get currentVideoTimestamp => _currentVideoTimestamp;
+  String get transferStatus => _transferStatus; // Getter for UI
 
-  // =========================================================
-  // 1. DISCOVERY LOGIC (UDP)
-  // =========================================================
   void startDiscovery() async {
     if (_isConnected) return;
     _isScanning = true;
@@ -63,18 +57,13 @@ class SocketService with ChangeNotifier {
             }
           }
         });
-        
-        // Broadcast "I'm here" every second
         Timer.periodic(const Duration(seconds: 1), (timer) {
-           if (_isConnected) {
-             timer.cancel();
-           } else {
+           if (_isConnected) timer.cancel();
+           else {
              try {
                 List<int> data = utf8.encode("SPATIAL_DISCOVER");
                 socket.send(data, InternetAddress("255.255.255.255"), 3000);
-             } catch(e) {
-               // Ignore permission errors on some networks
-             }
+             } catch(e) {}
            }
         });
       });
@@ -83,9 +72,6 @@ class SocketService with ChangeNotifier {
     }
   }
 
-  // =========================================================
-  // 2. CONNECTION LOGIC (WebSockets)
-  // =========================================================
   void connectToSpecificIP(String ip) async {
     if (_isConnected) return; 
     String url = "http://$ip:3000";
@@ -96,6 +82,7 @@ class SocketService with ChangeNotifier {
       'reconnection': true,
       'reconnectionAttempts': 9999,
       'reconnectionDelay': 500,
+      'maxHttpBufferSize': 1e8 // Match server buffer size (100MB)
     });
 
     if (!_socket!.connected) _socket!.connect();
@@ -104,9 +91,8 @@ class SocketService with ChangeNotifier {
       print('Connected to Neural Core');
       _isConnected = true;
       _isScanning = false;
-      _startHeartbeat(); // <--- STARTS THE PULSE
+      _startHeartbeat(); 
       
-      // Identify Device
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
       String deviceName = "Unknown Node";
       String type = "mobile";
@@ -134,14 +120,10 @@ class SocketService with ChangeNotifier {
     });
 
     _socket!.on('disconnect', (_) {
-      print('Connection unstable... attempting reconnect');
       _isConnected = false;
       notifyListeners();
     });
 
-    // --- DATA LISTENERS ---
-
-    // 1. Swipe Coordinates (Ghost Hand)
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
@@ -149,71 +131,88 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // 2. Transfer Request (Server asking for the file)
     _socket!.on('transfer_request', (data) async {
        String targetId = data['targetId'];
-       print("Server authorized transfer to $targetId");
+       print("Sending file to $targetId...");
+       _transferStatus = "SENDING..."; // Update UI
+       notifyListeners();
        
        if (_stagedFile != null) {
          try {
-           // Read bytes and convert to Base64
            List<int> bytes = await _stagedFile!.readAsBytes();
            String base64Data = base64Encode(bytes);
            
-           // Send the payload
            _socket!.emit('file_payload', {
              'targetId': targetId,
              'fileData': base64Data,
              'fileName': _stagedFile!.path.split('/').last,
              'fileType': _stagedFileType
            });
-           print("File payload sent!");
+           print("Payload sent!");
+           _transferStatus = "SENT";
+           notifyListeners();
+           
+           // Reset status after 2 seconds
+           Future.delayed(const Duration(seconds: 2), () {
+             _transferStatus = "IDLE";
+             notifyListeners();
+           });
+
          } catch (e) {
-           print("Error reading file: $e");
+           print("Error sending: $e");
+           _transferStatus = "ERROR SENDING";
+           notifyListeners();
          }
        }
     });
 
-    // 3. Receive Content (File arriving from another device)
+    // --- UPDATED RECEIVING LOGIC (WITH ERROR HANDLING) ---
     _socket!.on('content_transfer', (data) async {
-       print("Receiving file...");
-       String base64Data = data['fileData'];
-       String fileName = data['fileName'];
-       String type = data['fileType'];
+       print(">>> INCOMING DATA RECEIVED <<<");
+       _transferStatus = "RECEIVING...";
+       notifyListeners();
 
        try {
-         // Decode and Save to Temp
+         String base64Data = data['fileData'];
+         String fileName = data['fileName'];
+         String type = data['fileType'];
+
+         print("Decoding ${base64Data.length} bytes...");
+         
+         // 1. Decode
          Uint8List bytes = base64Decode(base64Data);
+         
+         // 2. Get Path
          final directory = await getTemporaryDirectory();
          final newFile = File('${directory.path}/$fileName');
+         
+         // 3. Write File
+         print("Saving to: ${newFile.path}");
          await newFile.writeAsBytes(bytes);
 
-         // Update UI to show the new file
+         // 4. Update UI
          _incomingContent = newFile.path;
          _incomingContentType = type;
+         _transferStatus = "RECEIVED";
          notifyListeners();
-       } catch (e) {
-         print("Error saving file: $e");
-       }
-    });
+         print("File Saved Successfully!");
 
-    _socket!.on('p2p_signal', (data) {
-        print("Received P2P Signal from ${data['senderId']}");
+       } catch (e) {
+         print("!!! ERROR SAVING FILE: $e");
+         _transferStatus = "SAVE FAILED";
+         notifyListeners();
+       }
     });
   }
 
-  // =========================================================
-  // 3. ACTIONS & HELPER METHODS
-  // =========================================================
-
-  // Stage a file to be sent on the next swipe
   void broadcastContent(File file, String type) {
     _stagedFile = file;
     _stagedFileType = type;
-    print("File staged: ${file.path}. Swipe to send.");
+    _transferStatus = "READY TO SEND";
+    notifyListeners();
+    print("File staged. Swipe to send.");
   }
 
-  // Send swipe coordinates
   void sendSwipeData(Map<String, dynamic> data) {
     if (_socket != null) {
       data['senderId'] = _myId;
@@ -221,18 +220,15 @@ class SocketService with ChangeNotifier {
     }
   }
 
-  // Fixes: "The method 'toggleConferenceMode' isn't defined"
   void toggleConferenceMode(bool value) {
     _isConferenceMode = value;
     notifyListeners();
   }
 
-  // Fixes: "The method 'updateLayout' isn't defined"
   void updateLayout(Map<String, dynamic> config) {
      if (_socket != null) _socket!.emit('update_layout', config);
   }
 
-  // Fixes: "where the void _startHeartbeat should start from"
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) {
