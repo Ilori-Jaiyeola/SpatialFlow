@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../services/socket_service.dart';
 import 'dart:io';
+import 'dart:math' as math; // Needed for rotation
 
 class SpatialRenderer extends StatefulWidget {
   const SpatialRenderer({Key? key}) : super(key: key);
@@ -129,14 +130,21 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
                 )
               ),
             ),
-          )
+          ),
+
+        // --- 4. VIRTUAL MOUSE CURSOR (Teleport Layer) ---
+        if (socketService.showVirtualCursor)
+           Positioned(
+             left: socketService.virtualMousePos.dx,
+             top: socketService.virtualMousePos.dy,
+             child: const MouseCursorWidget(), 
+           ),
       ],
     );
   }
 
   // --- HELPER: RADAR MAP ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
-    // 1. Find MY position in the server's list
     var me = service.activeDevices.firstWhere(
       (d) => d['id'] == service.myId, 
       orElse: () => null
@@ -150,22 +158,19 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
     final centerY = size.height / 2;
 
     return service.activeDevices.map<Widget>((device) {
-      if (device['id'] == service.myId) return const SizedBox(); // Don't draw self
+      if (device['id'] == service.myId) return const SizedBox(); 
 
-      // 2. Calculate Relative Position
       double relX = (device['x'] ?? 0).toDouble() - myX;
       double relY = (device['y'] ?? 0).toDouble() - myY;
 
-      // 3. Map to Screen Coordinates (1 Unit = 150 Pixels)
       double screenX = centerX + (relX * 150);
       double screenY = centerY + (relY * 150);
 
-      // Clamp to keep onscreen
       screenX = screenX.clamp(40.0, size.width - 40.0);
       screenY = screenY.clamp(120.0, size.height - 120.0);
 
       return Positioned(
-        left: screenX - 30, // Center the widget
+        left: screenX - 30,
         top: screenY - 30,
         child: Column(
           children: [
@@ -184,7 +189,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
             ),
             const SizedBox(height: 4),
             Text(
-              device['name'].toString().split(' [')[0], // Show simple name
+              device['name'].toString().split(' [')[0], 
               style: const TextStyle(color: Colors.white30, fontSize: 10)
             )
           ],
@@ -195,7 +200,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
 
   // --- HELPER: VIDEO PLAYER ---
   Widget _buildVideoPlayer(SocketService socketService) {
-    // Initialize logic
     if (_controller == null || _controller?.dataSource != socketService.incomingContent) {
         _controller?.dispose();
         _controller = VideoPlayerController.file(File(socketService.incomingContent))
@@ -206,15 +210,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
           });
     }
     
-    // Sync Logic (Snap to timestamp if drifting)
-    if (_controller!.value.isInitialized) {
-       int remoteTime = socketService.currentVideoTimestamp;
-       int localTime = _controller!.value.position.inMilliseconds;
-       if ((remoteTime - localTime).abs() > 500) {
-         _controller!.seekTo(Duration(milliseconds: remoteTime));
-       }
-    }
-
     if (!_controller!.value.isInitialized) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFF00E676)));
     }
@@ -237,10 +232,46 @@ class _SpatialRendererState extends State<SpatialRenderer> with SingleTickerProv
     );
   }
 
-  // --- HELPER: ICON TYPE ---
   IconData _getIconForType(String? type) {
     if (type == 'video') return Icons.videocam;
     if (type == 'image') return Icons.image;
     return Icons.insert_drive_file;
+  }
+}
+
+// --- NEW WIDGET: VIRTUAL MOUSE CURSOR ---
+class MouseCursorWidget extends StatelessWidget {
+  const MouseCursorWidget({Key? key}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Transform.translate(
+      offset: const Offset(-5, -5), // Center tip of pointer
+      child: Stack(
+        children: [
+          // Shadow
+          const Positioned(
+            left: 2, top: 2,
+            child: Icon(Icons.near_me, color: Colors.black54, size: 32)
+          ),
+          // Main Cursor Body
+          const Icon(Icons.near_me, color: Color(0xFF00E676), size: 30),
+          
+          // "PC" Badge
+          Positioned(
+            left: 20, top: 15,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(5),
+                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]
+              ),
+              child: const Text("PC", style: TextStyle(color: Colors.black, fontSize: 8, fontWeight: FontWeight.bold)),
+            ),
+          )
+        ],
+      ),
+    );
   }
 }
