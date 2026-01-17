@@ -7,23 +7,26 @@ import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart'; // NEW
+import 'package:open_filex/open_filex.dart'; 
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
   String? _myId;
   List<dynamic> _activeDevices = [];
+  
+  // --- STATE VARIABLES ---
   bool _isConnected = false;
+  bool _isScanning = false; // <--- ADDED BACK
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
   // --- MULTI-FILE STAGING ---
-  List<File> _stagedFiles = []; // NOW A LIST
+  List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
   // --- INCOMING DATA ---
   Map<String, dynamic>? _incomingSwipeData;
-  String? _lastReceivedFilePath; // Track the actual file path
+  String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
 
@@ -31,13 +34,14 @@ class SocketService with ChangeNotifier {
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // Getters
+  // --- GETTERS ---
   bool get isConnected => _isConnected;
+  bool get isScanning => _isScanning; // <--- ADDED BACK (Fixes main.dart error)
   bool get isConferenceMode => _isConferenceMode;
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
-  String? get lastReceivedFilePath => _lastReceivedFilePath; // Updated getter
+  String? get lastReceivedFilePath => _lastReceivedFilePath; 
   String? get incomingContentType => _incomingContentType;
   String get transferStatus => _transferStatus;
   Offset get virtualMousePos => _virtualMousePos;
@@ -46,6 +50,11 @@ class SocketService with ChangeNotifier {
   // --- 1. DISCOVERY & CONNECTION ---
   void startDiscovery() async {
     if (_isConnected) return;
+    
+    // Set scanning state
+    _isScanning = true;
+    notifyListeners();
+
     try {
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
         socket.broadcastEnabled = true;
@@ -86,6 +95,7 @@ class SocketService with ChangeNotifier {
     _socket!.onConnect((_) async {
       print('Connected to Neural Core');
       _isConnected = true;
+      _isScanning = false; // <--- Stop scanning when connected
       _startHeartbeat(); 
       
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
@@ -105,7 +115,10 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('register_confirm', (data) => _myId = data['id']);
     _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
-    _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
+    _socket!.on('disconnect', (_) { 
+        _isConnected = false; 
+        notifyListeners(); 
+    });
 
     // --- SWIPE GHOST ---
     _socket!.on('swipe_event', (data) {
@@ -124,7 +137,6 @@ class SocketService with ChangeNotifier {
          notifyListeners();
 
          try {
-           // LOOP THROUGH ALL SELECTED FILES
            for (var file in _stagedFiles) {
              List<int> bytes = await file.readAsBytes();
              String base64Data = base64Encode(bytes);
@@ -135,13 +147,10 @@ class SocketService with ChangeNotifier {
                'fileName': file.path.split('/').last,
                'fileType': _stagedFileType
              });
-             print("Sent: ${file.path}");
-             await Future.delayed(const Duration(milliseconds: 300)); // Tiny buffer
+             await Future.delayed(const Duration(milliseconds: 300)); 
            }
 
            _transferStatus = "SENT ALL";
-           // CLEAR STAGE so we don't resend on next swipe unless re-selected
-           // _stagedFiles.clear(); // Optional: Keep them if user wants to resend
            notifyListeners();
            
            Future.delayed(const Duration(seconds: 2), () {
@@ -168,7 +177,6 @@ class SocketService with ChangeNotifier {
          
          Uint8List bytes = base64Decode(base64Data);
          
-         // 1. DETERMINE FOLDER (SORTING LOGIC)
          final appDir = await getApplicationDocumentsDirectory();
          String subFolder = (type == 'video') ? 'SpatialVideos' : 'SpatialImages';
          final saveDir = Directory('${appDir.path}/$subFolder');
@@ -176,18 +184,13 @@ class SocketService with ChangeNotifier {
            await saveDir.create(recursive: true);
          }
 
-         // 2. SAVE FILE
          final newFile = File('${saveDir.path}/$fileName');
          await newFile.writeAsBytes(bytes);
 
-         // 3. UPDATE STATE
          _lastReceivedFilePath = newFile.path;
          _incomingContentType = type;
          _transferStatus = "RECEIVED";
          notifyListeners();
-         
-         // 4. AUTO-OPEN (Optional, or just notify)
-         // OpenFilex.open(newFile.path); 
 
        } catch (e) {
          print("Save Error: $e");
@@ -212,7 +215,6 @@ class SocketService with ChangeNotifier {
 
   // --- ACTIONS ---
 
-  // UPDATED: Accepts List<File>
   void broadcastContent(List<File> files, String type) {
     _stagedFiles = files;
     _stagedFileType = type;
@@ -242,10 +244,10 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
-  // UPDATED: Open the last received file
+  // FIXED: Added check for null safety
   void openLastFile() {
     if (_lastReceivedFilePath != null) {
-      OpenFilex.open(_lastReceivedFilePath);
+      OpenFilex.open(_lastReceivedFilePath!); // <--- ADDED "!"
     }
   }
 
