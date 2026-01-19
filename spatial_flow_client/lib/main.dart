@@ -1,3 +1,4 @@
+// ... imports same as before ...
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
@@ -65,7 +66,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // --- LOGIC ---
   void _onFilesDropped(List<XFile> files) => _processFiles(files);
   
   Future<void> _pickMedia(String type) async {
@@ -83,7 +83,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _processFiles(List<XFile> files) {
     if (files.isEmpty) return;
     String ext = files.first.path.split('.').last.toLowerCase();
-    String type = (['mp4', 'mov', 'avi', 'mkv'].contains(ext) || _fileType == 'video') ? 'video' : 'image'; // Better detection
+    String type = (['mp4', 'mov', 'avi', 'mkv'].contains(ext) || _fileType == 'video') ? 'video' : 'image';
 
     setState(() {
       _selectedFiles = files.map((x) => File(x.path)).toList();
@@ -98,15 +98,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
-  void _initVideoPlayer(File file) {
-    _senderVideoController?.dispose();
-    _senderVideoController = VideoPlayerController.file(file)
-      ..initialize().then((_) {
-        setState(() {}); // Refresh to show video instead of gray box
-        _senderVideoController!.setVolume(0);
-        _senderVideoController!.play();
-        _senderVideoController!.setLooping(true);
-      });
+  void _initVideoPlayer(File file) async {
+    // Dipose old
+    final old = _senderVideoController;
+    if (old != null) await old.dispose();
+
+    _senderVideoController = VideoPlayerController.file(file);
+    await _senderVideoController!.initialize();
+    
+    if (!mounted) return;
+
+    setState(() {
+      _senderVideoController!.setVolume(0);
+      _senderVideoController!.play();
+      _senderVideoController!.setLooping(true);
+    });
   }
 
   void _clearSender() {
@@ -155,7 +161,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               _buildBackground(),
 
-              // 1. DASHBOARD UI
+              // DASHBOARD
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
@@ -181,7 +187,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // 2. SENDER PREVIEW (Draggable, Zoomable, Closable)
+              // SENDER PREVIEW
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
@@ -189,7 +195,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildDraggableContent(context), 
                 ),
 
-              // 3. RECEIVER RENDERER
+              // RECEIVER RENDERER
               const SpatialRenderer(),
             ],
           ),
@@ -198,9 +204,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- WIDGETS ---
+  // ... (Keep _buildBackground, _buildGlassStatusCard, _buildGlassDeviceTile same as before) ...
   Widget _buildBackground() => Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)])));
-  
   Widget _buildGlassStatusCard(SocketService service) { 
     return GlassBox(
       borderGlow: service.isConferenceMode,
@@ -232,14 +237,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
-
   Widget _buildGlassDeviceTile(dynamic device, String? myId) {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
 
-  // --- FIXED: SENDER PREVIEW ---
   Widget _buildDraggableContent(BuildContext context) {
-    // Dynamic Size Constraints (Fixes PC Tray issue)
     return Container(
       constraints: BoxConstraints(
         maxWidth: MediaQuery.of(context).size.width * 0.8,
@@ -248,14 +250,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         minHeight: 150
       ),
       decoration: BoxDecoration(
-        color: Colors.black, // Dark background
+        color: Colors.black, 
         borderRadius: BorderRadius.circular(20),
         boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
         border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
       ),
       child: Stack(
         children: [
-          // 1. CONTENT (Zoomable)
+          // 1. CONTENT
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: InteractiveViewer(
@@ -264,11 +266,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       aspectRatio: _senderVideoController!.value.aspectRatio,
                       child: VideoPlayer(_senderVideoController!)
                     )
-                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), // Use Contain to see whole image
+                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), 
             ),
           ),
           
-          // 2. CLOSE BUTTON (New)
+          // 2. CLOSE BUTTON
           Positioned(
             top: 5, right: 5,
             child: GestureDetector(
@@ -281,16 +283,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
 
-          // 3. MULTI-FILE BADGE
           if (_selectedFiles.length > 1)
-            Positioned(
-              left: 10, top: 10, 
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
-                decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), 
-                child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))
-              )
-            )
+            Positioned(left: 10, top: 10, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))))
         ],
       ),
     );
@@ -310,6 +304,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
+// ... SpatialGestureLayer remains same ...
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
