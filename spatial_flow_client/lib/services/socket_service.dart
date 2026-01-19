@@ -350,8 +350,47 @@ class SocketService with ChangeNotifier {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_socket != null && _socket!.connected) _socket!.emit('heartbeat'); 
     });
+
+  // --- HELPER: EXECUTE TRANSFER ---
+  // This is called by both:
+  // 1. The Server (transfer_request)
+  // 2. The Client Swipe (triggerSwipeTransfer)
+  Future<void> _executeFileTransfer(String targetId) async {
+     if (_stagedFiles.isEmpty) return;
+
+     _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
+     notifyListeners();
+
+     try {
+       for (var file in _stagedFiles) {
+         List<int> bytes = await file.readAsBytes();
+         String base64Data = base64Encode(bytes);
+         
+         _socket!.emit('file_payload', {
+           'targetId': targetId,
+           'senderId': _myId,
+           'fileData': base64Data,
+           'fileName': file.path.split('/').last,
+           'fileType': _stagedFileType
+         });
+         // Small delay to prevent network congestion
+         await Future.delayed(const Duration(milliseconds: 200)); 
+       }
+       _transferStatus = "SENT";
+       notifyListeners();
+       
+       Future.delayed(const Duration(seconds: 2), () {
+         _transferStatus = "IDLE";
+         notifyListeners();
+       });
+     } catch (e) {
+       print("Transfer Error: $e");
+       _transferStatus = "ERROR";
+       notifyListeners();
+     } 
   }
 }
+
 
 
 
