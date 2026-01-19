@@ -65,6 +65,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
+  // --- LOGIC METHODS ---
+
   void _onFilesDropped(List<XFile> files) => _processFiles(files);
   
   Future<void> _pickMedia(String type) async {
@@ -122,12 +124,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Provider.of<SocketService>(context, listen: false).clearStagedFiles();
   }
   
-  // NEW: MANUAL SEND BUTTON LOGIC
   void _manualSend() {
      final service = Provider.of<SocketService>(context, listen: false);
-     // Default send to "Right" if manually clicked, or prompt user
-     // For now, we simulate a "Right Swipe" to trigger the auto-finder
-     service.triggerSwipeTransfer(500, 0); 
+     service.triggerSwipeTransfer(500, 0); // Simulate Right Swipe
   }
 
   @override
@@ -162,7 +161,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                ),
             ],
           ),
-          floatingActionButton: _buildFab(),
+          floatingActionButton: _buildFab(), // <--- METHOD CALLED HERE
           body: Stack(
             children: [
               _buildBackground(),
@@ -210,6 +209,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- UI HELPERS ---
+
+  Widget _buildFab() { // <--- HERE IT IS, RESTORED
+    return Column(mainAxisAlignment: MainAxisAlignment.end, children: [
+        FloatingActionButton.small(heroTag: "f1", onPressed: () => _pickMedia('image'), child: const Icon(Icons.image)),
+        const SizedBox(height: 10),
+        FloatingActionButton(heroTag: "f2", backgroundColor: const Color(0xFF00E676), onPressed: () => _pickMedia('video'), child: const Icon(Icons.play_arrow)),
+    ]);
+  }
+
   Widget _buildDraggableContent(BuildContext context) {
     return Container(
       constraints: BoxConstraints(
@@ -239,7 +248,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
           
-          // 2. CLOSE BUTTON (Top Right)
+          // 2. CLOSE BUTTON
           Positioned(
             top: 5, right: 5,
             child: GestureDetector(
@@ -252,7 +261,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
 
-          // 3. SEND BUTTON (Bottom Right - Manual Trigger)
+          // 3. SEND BUTTON (Manual Trigger)
           Positioned(
             bottom: 10, right: 10,
             child: FloatingActionButton.small(
@@ -269,8 +278,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // ... (Keep other helpers like _buildBackground, _buildFab same as before)
   Widget _buildBackground() => Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)])));
+  
   Widget _buildGlassStatusCard(SocketService service) { 
     return GlassBox(
       borderGlow: service.isConferenceMode,
@@ -302,14 +311,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
+
   Widget _buildGlassDeviceTile(dynamic device, String? myId) {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
+  
   void _showManualConnectDialog(BuildContext context, SocketService service) { 
       TextEditingController ipController = TextEditingController(text: "192.168.");
       showDialog(context: context, builder: (context) => AlertDialog(backgroundColor: const Color(0xFF1E1E1E), title: const Text("Manual Connection", style: TextStyle(color: Colors.white)), content: TextField(controller: ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54))), actions: [ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)), onPressed: () { Navigator.pop(context); if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim()); }, child: const Text("Connect", style: TextStyle(color: Colors.black)))]));
   }
 }
+
+// --- GESTURE LAYER ---
 
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
@@ -333,7 +346,6 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
         socketService.sendSwipeData({'x': event.position.dx / size.width, 'y': event.position.dy / size.height, 'isDragging': true, 'action': 'move'});
         
-        // Mouse Teleport
         if (Platform.isWindows) {
            if (event.position.dx < 5) {
               var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
@@ -356,12 +368,8 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
 
         socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
 
-        // --- IMPROVED TRIGGER LOGIC ---
-        // 1. Velocity Check (Fast Swipe)
+        // TRIGGER LOGIC
         bool isFast = vx.abs() > 100 || vy.abs() > 100;
-        
-        // 2. Distance Check (Dragged halfway across screen)
-        // If you drag item > 20% of screen width, treat as intent to send
         bool isFar = dx.abs() > (size.width * 0.2); 
 
         if (isFast || isFar) {
