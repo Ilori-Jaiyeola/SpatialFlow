@@ -122,8 +122,9 @@ io.on('connection', (socket) => {
         const velocityX = data.vx || 0;
         const velocityY = data.vy || 0;
 
-        // Hard Swipe = Transfer
-        if (data.action === 'release' && (Math.abs(velocityX) > 100 || Math.abs(velocityY) > 100)) {
+        // CHANGED: Lower threshold from 100 to 20 for easier triggering
+        // Also added check for "isDragging: false" (Release event)
+        if (data.action === 'release' && (Math.abs(velocityX) > 20 || Math.abs(velocityY) > 20)) {
             const target = findTargetDevice(sender, { velocityX, velocityY });
 
             if (target) {
@@ -165,3 +166,4 @@ const addrs = getBroadcastAddresses().map(a => a.ip).join(', ');
 http.listen(TCP_PORT, '0.0.0.0', () => {
     console.log(`NEURAL CORE v2.5 ONLINE. Listening on: [${addrs}]`);
 });
+
