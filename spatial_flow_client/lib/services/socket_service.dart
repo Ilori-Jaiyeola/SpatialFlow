@@ -125,12 +125,14 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // --- SENDING ---
-    _socket!.on('transfer_request', (data) async {
+    // --- SENDING (Server Triggered Fallback) ---
+    _socket!.on('transfer_request', (data) {
        String targetId = data['targetId'];
-       if (_stagedFiles.isNotEmpty) {
-         _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
-         notifyListeners();
+       print("Server requested transfer to: $targetId");
+       
+       // Just call the new helper function
+       _executeFileTransfer(targetId);
+    });
 
          try {
            for (var file in _stagedFiles) {
@@ -350,5 +352,6 @@ class SocketService with ChangeNotifier {
     });
   }
 }
+
 
 
