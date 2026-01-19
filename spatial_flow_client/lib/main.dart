@@ -241,13 +241,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
 
+  // --- FIXED: PC ASPECT RATIO ---
   Widget _buildDraggableContent(BuildContext context) {
+    // 1. Determine Content Aspect Ratio
+    double aspectRatio = 1.0; // Default square
+    if (_fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized) {
+      aspectRatio = _senderVideoController!.value.aspectRatio;
+    } else if (_selectedFiles.isNotEmpty) {
+      // For images, we default to 1.0 locally for drag ease, or you can decode image size (complex).
+      // Keeping it 16:9 for generic dragging feel is usually safer than square.
+      aspectRatio = 16 / 9; 
+    }
+
     return Container(
+      // 2. Loose Constraints: Let the content size itself up to a limit
       constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.8,
-        maxHeight: MediaQuery.of(context).size.height * 0.6,
-        minWidth: 150,
-        minHeight: 150
+        maxWidth: MediaQuery.of(context).size.width * 0.6, // Max 60% screen width
+        maxHeight: MediaQuery.of(context).size.height * 0.6, // Max 60% screen height
       ),
       decoration: BoxDecoration(
         color: Colors.black, 
@@ -257,20 +267,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       child: Stack(
         children: [
-          // 1. CONTENT
+          // 3. CONTENT
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
-            child: InteractiveViewer(
+            child: AspectRatio(
+              aspectRatio: aspectRatio, // <--- THIS FORCES CORRECT RATIO
               child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
-                  ? AspectRatio(
-                      aspectRatio: _senderVideoController!.value.aspectRatio,
-                      child: VideoPlayer(_senderVideoController!)
-                    )
-                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), 
+                  ? VideoPlayer(_senderVideoController!)
+                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), // Contain shows full image
             ),
           ),
           
-          // 2. CLOSE BUTTON
+          // 4. CLOSE BUTTON
           Positioned(
             top: 5, right: 5,
             child: GestureDetector(
@@ -363,4 +371,5 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     );
   }
 }
+
 
