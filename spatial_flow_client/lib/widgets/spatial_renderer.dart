@@ -18,7 +18,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   Animation<Offset>? _slideAnimation;
   
   String? _currentFilePath;
-  bool _isVideoInitialized = false; // Explicit Flag
+  bool _isVideoInitialized = false;
 
   @override
   void initState() {
@@ -43,11 +43,16 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // NEW FILE DETECTED
+    // DETECT NEW FILE
     if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
        _currentFilePath = service.lastReceivedFilePath; 
        
-       // Verify file exists and has data
+       // 1. CACHE BUSTING (The Fix)
+       if (service.incomingContentType != 'video') {
+         // Force clear image from cache to prevent "Grey Screen"
+         FileImage(File(_currentFilePath!)).evict();
+       }
+
        File file = File(_currentFilePath!);
        if (file.existsSync() && file.lengthSync() > 0) {
            _calculateEntryDirection(service);
@@ -56,14 +61,11 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
            if (service.incomingContentType == 'video') {
              _initializeVideo(file);
            }
-       } else {
-         print("Error: Received Empty File");
        }
     }
   }
 
   Future<void> _initializeVideo(File file) async {
-    // Reset State
     setState(() => _isVideoInitialized = false);
     
     final oldController = _controller;
@@ -75,7 +77,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     if (!mounted) return;
     
     setState(() {
-       _isVideoInitialized = true; // NOW we show the video
+       _isVideoInitialized = true;
        _controller!.play();
        _controller!.setLooping(true);
        _controller!.setVolume(1.0);
@@ -133,7 +135,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 3. FULL SCREEN VIEWER (Fixed Logic)
+        // 3. FULL SCREEN VIEWER
         if (contentPath != null)
           SlideTransition(
             position: _slideAnimation!,
@@ -142,7 +144,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                 children: [
                   Container(color: Colors.black), 
 
-                  // CONTENT RENDERER
                   Center(
                     child: contentType == 'video' 
                         ? (_isVideoInitialized && _controller != null
@@ -155,12 +156,13 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                             minScale: 1.0, maxScale: 4.0,
                             child: Image.file(
                               File(contentPath), 
-                              key: ValueKey(contentPath), 
-                              fit: BoxFit.contain, // Ensures aspect ratio is respected
-                              width: double.infinity, 
-                              height: double.infinity,
+                              key: UniqueKey(), // Forces Fresh Render
+                              fit: BoxFit.contain, 
                               gaplessPlayback: true,
-                              errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.red, size: 50),
+                              errorBuilder: (context, error, stackTrace) => const Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [Icon(Icons.broken_image, color: Colors.red, size: 50), Text("Corrupt File", style: TextStyle(color: Colors.white))],
+                              ),
                             )
                           ),
                   ),
@@ -202,7 +204,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
-  // --- HELPERS ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
