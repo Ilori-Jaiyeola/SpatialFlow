@@ -140,31 +140,40 @@ class SocketService with ChangeNotifier {
 
        try {
          String base64Data = data['fileData'];
-         String fileName = data['fileName'];
+         String originalName = data['fileName']; // e.g. "photo.jpg"
          String type = data['fileType'];
          String senderId = data['senderId'] ?? "";
          
          Uint8List bytes = base64Decode(base64Data);
          
-         final tempDir = await getTemporaryDirectory();
-         final tempFile = File('${tempDir.path}/$fileName');
-         await tempFile.writeAsBytes(bytes);
+         // 1. GENERATE UNIQUE FILENAME (The Fix)
+         // We add a timestamp so Flutter thinks it's a brand new file every time.
+         String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+         String extension = originalName.split('.').last;
+         String nameWithoutExt = originalName.split('.').first;
+         String uniqueFileName = "${nameWithoutExt}_$timestamp.$extension";
 
-         // Save to Gallery/Downloads
+         // 2. SAVE TO TEMP (For Immediate Display)
+         final tempDir = await getTemporaryDirectory();
+         final tempFile = File('${tempDir.path}/$uniqueFileName');
+         await tempFile.writeAsBytes(bytes, flush: true); // flush: true ensures write is done
+
+         // 3. SAVE TO GALLERY (Background)
          if (Platform.isAndroid || Platform.isIOS) {
              try {
                 await Gal.putImage(tempFile.path); 
                 if (type == 'video') await Gal.putVideo(tempFile.path);
              } catch (e) { print("Gallery Error: $e"); }
          } else {
+             // Windows
              final downloadsDir = await getApplicationDocumentsDirectory(); 
              final saveDir = Directory('${downloadsDir.path}/SpatialFlow');
              if (!await saveDir.exists()) await saveDir.create(recursive: true);
-             final permFile = File('${saveDir.path}/$fileName');
+             final permFile = File('${saveDir.path}/$uniqueFileName');
              await permFile.writeAsBytes(bytes);
          }
 
-         // Update UI
+         // 4. UPDATE UI
          _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
          _incomingSenderId = senderId; 
@@ -308,3 +317,4 @@ class SocketService with ChangeNotifier {
     });
   }
 }
+
