@@ -1,4 +1,3 @@
-// ... imports same as before ...
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:image_picker/image_picker.dart';
@@ -99,7 +98,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _initVideoPlayer(File file) async {
-    // Dipose old
     final old = _senderVideoController;
     if (old != null) await old.dispose();
 
@@ -122,6 +120,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _senderVideoController = null;
     });
     Provider.of<SocketService>(context, listen: false).clearStagedFiles();
+  }
+  
+  // NEW: MANUAL SEND BUTTON LOGIC
+  void _manualSend() {
+     final service = Provider.of<SocketService>(context, listen: false);
+     // Default send to "Right" if manually clicked, or prompt user
+     // For now, we simulate a "Right Swipe" to trigger the auto-finder
+     service.triggerSwipeTransfer(500, 0); 
   }
 
   @override
@@ -204,7 +210,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // ... (Keep _buildBackground, _buildGlassStatusCard, _buildGlassDeviceTile same as before) ...
+  Widget _buildDraggableContent(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.8,
+        maxHeight: MediaQuery.of(context).size.height * 0.6,
+        minWidth: 150,
+        minHeight: 150
+      ),
+      decoration: BoxDecoration(
+        color: Colors.black, 
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
+        border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
+      ),
+      child: Stack(
+        children: [
+          // 1. CONTENT
+          ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: InteractiveViewer(
+              child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
+                  ? AspectRatio(
+                      aspectRatio: _senderVideoController!.value.aspectRatio,
+                      child: VideoPlayer(_senderVideoController!)
+                    )
+                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), 
+            ),
+          ),
+          
+          // 2. CLOSE BUTTON (Top Right)
+          Positioned(
+            top: 5, right: 5,
+            child: GestureDetector(
+              onTap: _clearSender,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                child: const Icon(Icons.close, color: Colors.white, size: 20),
+              ),
+            ),
+          ),
+
+          // 3. SEND BUTTON (Bottom Right - Manual Trigger)
+          Positioned(
+            bottom: 10, right: 10,
+            child: FloatingActionButton.small(
+              backgroundColor: const Color(0xFF00E676),
+              onPressed: _manualSend,
+              child: const Icon(Icons.send, color: Colors.black),
+            ),
+          ),
+
+          if (_selectedFiles.length > 1)
+            Positioned(left: 10, top: 10, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))))
+        ],
+      ),
+    );
+  }
+
+  // ... (Keep other helpers like _buildBackground, _buildFab same as before)
   Widget _buildBackground() => Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)])));
   Widget _buildGlassStatusCard(SocketService service) { 
     return GlassBox(
@@ -240,79 +305,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildGlassDeviceTile(dynamic device, String? myId) {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
-
-  // --- FIXED: PC ASPECT RATIO ---
-  Widget _buildDraggableContent(BuildContext context) {
-    // 1. Determine Content Aspect Ratio
-    double aspectRatio = 1.0; // Default square
-    if (_fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized) {
-      aspectRatio = _senderVideoController!.value.aspectRatio;
-    } else if (_selectedFiles.isNotEmpty) {
-      // For images, we default to 1.0 locally for drag ease, or you can decode image size (complex).
-      // Keeping it 16:9 for generic dragging feel is usually safer than square.
-      aspectRatio = 16 / 9; 
-    }
-
-    return Container(
-      // 2. Loose Constraints: Let the content size itself up to a limit
-      constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.6, // Max 60% screen width
-        maxHeight: MediaQuery.of(context).size.height * 0.6, // Max 60% screen height
-      ),
-      decoration: BoxDecoration(
-        color: Colors.black, 
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
-        border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-      ),
-      child: Stack(
-        children: [
-          // 3. CONTENT
-          ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: AspectRatio(
-              aspectRatio: aspectRatio, // <--- THIS FORCES CORRECT RATIO
-              child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
-                  ? VideoPlayer(_senderVideoController!)
-                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), // Contain shows full image
-            ),
-          ),
-          
-          // 4. CLOSE BUTTON
-          Positioned(
-            top: 5, right: 5,
-            child: GestureDetector(
-              onTap: _clearSender,
-              child: Container(
-                padding: const EdgeInsets.all(5),
-                decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
-                child: const Icon(Icons.close, color: Colors.white, size: 20),
-              ),
-            ),
-          ),
-
-          if (_selectedFiles.length > 1)
-            Positioned(left: 10, top: 10, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))))
-        ],
-      ),
-    );
-  }
-
-  Widget _buildFab() {
-    return Column(mainAxisAlignment: MainAxisAlignment.end, children: [
-        FloatingActionButton.small(heroTag: "f1", onPressed: () => _pickMedia('image'), child: const Icon(Icons.image)),
-        const SizedBox(height: 10),
-        FloatingActionButton(heroTag: "f2", backgroundColor: const Color(0xFF00E676), onPressed: () => _pickMedia('video'), child: const Icon(Icons.play_arrow)),
-    ]);
-  }
-  
   void _showManualConnectDialog(BuildContext context, SocketService service) { 
       TextEditingController ipController = TextEditingController(text: "192.168.");
       showDialog(context: context, builder: (context) => AlertDialog(backgroundColor: const Color(0xFF1E1E1E), title: const Text("Manual Connection", style: TextStyle(color: Colors.white)), content: TextField(controller: ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54))), actions: [ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)), onPressed: () { Navigator.pop(context); if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim()); }, child: const Text("Connect", style: TextStyle(color: Colors.black)))]));
   }
 }
 
-// ... SpatialGestureLayer remains same ...
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -334,6 +332,8 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
       onPointerMove: (event) {
         if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
         socketService.sendSwipeData({'x': event.position.dx / size.width, 'y': event.position.dy / size.height, 'isDragging': true, 'action': 'move'});
+        
+        // Mouse Teleport
         if (Platform.isWindows) {
            if (event.position.dx < 5) {
               var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
@@ -349,21 +349,22 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         final duration = DateTime.now().difference(_startTime).inMilliseconds;
         if (duration < 50) return; 
 
-        double vx = ((event.position.dx - _startPos.dx) / duration) * 1000;
-        double vy = ((event.position.dy - _startPos.dy) / duration) * 1000;
+        double dx = event.position.dx - _startPos.dx;
+        double dy = event.position.dy - _startPos.dy;
+        double vx = (dx / duration) * 1000;
+        double vy = (dy / duration) * 1000;
 
-        // 1. Send Visuals to Server (Ghost Hand) - Keep this for the "cool effect"
-        socketService.sendSwipeData({
-            'isDragging': false, 
-            'action': 'release',
-            'vx': vx, 
-            'vy': vy,
-            ...widget.extraData
-        });
+        socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
 
-        // 2. TRIGGER TRANSFER LOCALLY (The Fix)
-        // Only trigger if swipe is fast enough (> 100 pixels/sec)
-        if (vx.abs() > 100 || vy.abs() > 100) {
+        // --- IMPROVED TRIGGER LOGIC ---
+        // 1. Velocity Check (Fast Swipe)
+        bool isFast = vx.abs() > 100 || vy.abs() > 100;
+        
+        // 2. Distance Check (Dragged halfway across screen)
+        // If you drag item > 20% of screen width, treat as intent to send
+        bool isFar = dx.abs() > (size.width * 0.2); 
+
+        if (isFast || isFar) {
             socketService.triggerSwipeTransfer(vx, vy);
         }
       },
@@ -371,5 +372,3 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     );
   }
 }
-
-
