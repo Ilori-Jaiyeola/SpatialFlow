@@ -15,28 +15,28 @@ class SocketService with ChangeNotifier {
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // STATE
+  // --- STATE VARIABLES ---
   bool _isConnected = false;
   bool _isScanning = false;
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
-  // MULTI-FILE
+  // --- MULTI-FILE STAGING ---
   List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
-  // INCOMING
+  // --- INCOMING DATA ---
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
   String? _incomingSenderId; 
 
-  // UNIFIED CANVAS (Mouse)
+  // --- UNIFIED CANVAS (Mouse) ---
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // GETTERS
+  // --- GETTERS ---
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
   bool get isConferenceMode => _isConferenceMode;
@@ -50,7 +50,9 @@ class SocketService with ChangeNotifier {
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
 
-  // --- 1. DISCOVERY ---
+  // =========================================================
+  // 1. DISCOVERY & CONNECTION
+  // =========================================================
   void startDiscovery() async {
     if (_isConnected) return;
     _isScanning = true;
@@ -75,7 +77,7 @@ class SocketService with ChangeNotifier {
           }
         });
       });
-    } catch (e) { print("UDP: $e"); }
+    } catch (e) { print("UDP Error: $e"); }
   }
 
   void connectToSpecificIP(String ip) async {
@@ -125,40 +127,10 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // --- SENDING (Server Triggered Fallback) ---
+    // --- SENDING (Server Trigger Fallback) ---
     _socket!.on('transfer_request', (data) {
        String targetId = data['targetId'];
-       print("Server requested transfer to: $targetId");
-       
-       // Just call the new helper function
        _executeFileTransfer(targetId);
-    });
-
-         try {
-           for (var file in _stagedFiles) {
-             List<int> bytes = await file.readAsBytes();
-             String base64Data = base64Encode(bytes);
-             
-             _socket!.emit('file_payload', {
-               'targetId': targetId,
-               'senderId': _myId, 
-               'fileData': base64Data,
-               'fileName': file.path.split('/').last,
-               'fileType': _stagedFileType
-             });
-             await Future.delayed(const Duration(milliseconds: 200)); 
-           }
-           _transferStatus = "SENT";
-           notifyListeners();
-           Future.delayed(const Duration(seconds: 2), () {
-             _transferStatus = "IDLE";
-             notifyListeners();
-           });
-         } catch (e) {
-           _transferStatus = "ERROR";
-           notifyListeners();
-         }
-       }
     });
 
     // --- RECEIVING ---
@@ -219,42 +191,15 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  // --- ACTIONS ---
-  
-  // NEW: CLEAR VIEW FOR CLOSE BUTTON
-  void clearView() {
-    _lastReceivedFilePath = null;
-    _incomingContentType = null;
-    notifyListeners();
-  }
+  // =========================================================
+  // 2. ACTIONS & METHODS
+  // =========================================================
 
-  // NEW: Clears the SENDER's selection
-  void clearStagedFiles() {
-    _stagedFiles = [];
-    _stagedFileType = 'file';
-    _transferStatus = "IDLE";
-    notifyListeners();
-  }
-  
-  void broadcastContent(List<File> files, String type) {
-    _stagedFiles = files;
-    _stagedFileType = type;
-    _transferStatus = "READY (${files.length})";
-    notifyListeners();
-  }
-
-  // --- NEW: DIRECT TRANSFER TRIGGER ---
+  // NEW: TRIGGER TRANSFER DIRECTLY FROM CLIENT SWIPE
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
 
-    // 1. Calculate Swipe Direction (Normalized)
-    // Positive X = Right, Negative X = Left
-    // We only care about X for now since devices are usually side-by-side
     int directionX = vx > 0 ? 1 : -1;
-
-    // 2. Find a Target Device in that direction
-    // Logic: Look for a device whose 'x' position matches my direction relative to me
-    // (Simplification: If I am 0, Left is -1, Right is 1)
     
     var me = _activeDevices.firstWhere((d) => d['id'] == _myId, orElse: () => null);
     if (me == null) return;
@@ -264,33 +209,22 @@ class SocketService with ChangeNotifier {
     var target = _activeDevices.firstWhere((d) {
       if (d['id'] == _myId) return false;
       int targetX = d['x'] ?? 0;
-      
-      // If swipe is RIGHT (vx > 0), target must be to the RIGHT of me (targetX > myX)
-      if (vx > 0 && targetX > myX) return true;
-      
-      // If swipe is LEFT (vx < 0), target must be to the LEFT of me (targetX < myX)
-      if (vx < 0 && targetX < myX) return true;
-      
+      if (vx > 0 && targetX > myX) return true; // Swipe Right -> Target on Right
+      if (vx < 0 && targetX < myX) return true; // Swipe Left -> Target on Left
       return false;
     }, orElse: () => null);
 
-    // 3. FORCE SEND (If target found)
     if (target != null) {
-      print("Client-Side Trigger: Sending to ${target['name']}");
-      
-      // Mimic the 'transfer_request' logic locally
-      _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
-      notifyListeners();
-      
-      _executeFileTransfer(target['id']); // Call the internal sender
-    } else {
-      print("No target found in swipe direction!");
-      // Optional: Shake effect or visual cue
+      print("Client Trigger: Sending to ${target['name']}");
+      _executeFileTransfer(target['id']); 
     }
   }
 
-  // Refactored the actual sending loop into a private function so we can call it from two places
+  // HELPER: EXECUTES THE TRANSFER LOOP
   Future<void> _executeFileTransfer(String targetId) async {
+     _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
+     notifyListeners();
+
      try {
        for (var file in _stagedFiles) {
          List<int> bytes = await file.readAsBytes();
@@ -316,7 +250,29 @@ class SocketService with ChangeNotifier {
        notifyListeners();
      }
   }
-  
+
+  // NEW: CLEAR SENDER SELECTION
+  void clearStagedFiles() {
+    _stagedFiles = [];
+    _stagedFileType = 'file';
+    _transferStatus = "IDLE";
+    notifyListeners();
+  }
+
+  // NEW: CLEAR RECEIVER VIEW
+  void clearView() {
+    _lastReceivedFilePath = null;
+    _incomingContentType = null;
+    notifyListeners();
+  }
+
+  void broadcastContent(List<File> files, String type) {
+    _stagedFiles = files;
+    _stagedFileType = type;
+    _transferStatus = "READY (${files.length})";
+    notifyListeners();
+  }
+
   void sendSwipeData(Map<String, dynamic> data) {
     if (_socket != null) {
       data['senderId'] = _myId;
@@ -350,47 +306,5 @@ class SocketService with ChangeNotifier {
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_socket != null && _socket!.connected) _socket!.emit('heartbeat'); 
     });
-
-  // --- HELPER: EXECUTE TRANSFER ---
-  // This is called by both:
-  // 1. The Server (transfer_request)
-  // 2. The Client Swipe (triggerSwipeTransfer)
-  Future<void> _executeFileTransfer(String targetId) async {
-     if (_stagedFiles.isEmpty) return;
-
-     _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
-     notifyListeners();
-
-     try {
-       for (var file in _stagedFiles) {
-         List<int> bytes = await file.readAsBytes();
-         String base64Data = base64Encode(bytes);
-         
-         _socket!.emit('file_payload', {
-           'targetId': targetId,
-           'senderId': _myId,
-           'fileData': base64Data,
-           'fileName': file.path.split('/').last,
-           'fileType': _stagedFileType
-         });
-         // Small delay to prevent network congestion
-         await Future.delayed(const Duration(milliseconds: 200)); 
-       }
-       _transferStatus = "SENT";
-       notifyListeners();
-       
-       Future.delayed(const Duration(seconds: 2), () {
-         _transferStatus = "IDLE";
-         notifyListeners();
-       });
-     } catch (e) {
-       print("Transfer Error: $e");
-       _transferStatus = "ERROR";
-       notifyListeners();
-     } 
   }
 }
-
-
-
-
