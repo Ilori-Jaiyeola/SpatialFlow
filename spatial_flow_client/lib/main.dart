@@ -340,11 +340,27 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
       onPointerUp: (event) {
         final duration = DateTime.now().difference(_startTime).inMilliseconds;
         if (duration < 50) return; 
+
         double vx = ((event.position.dx - _startPos.dx) / duration) * 1000;
         double vy = ((event.position.dy - _startPos.dy) / duration) * 1000;
-        socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
+
+        // 1. Send Visuals to Server (Ghost Hand) - Keep this for the "cool effect"
+        socketService.sendSwipeData({
+            'isDragging': false, 
+            'action': 'release',
+            'vx': vx, 
+            'vy': vy,
+            ...widget.extraData
+        });
+
+        // 2. TRIGGER TRANSFER LOCALLY (The Fix)
+        // Only trigger if swipe is fast enough (> 100 pixels/sec)
+        if (vx.abs() > 100 || vy.abs() > 100) {
+            socketService.triggerSwipeTransfer(vx, vy);
+        }
       },
       child: widget.child,
     );
   }
 }
+
