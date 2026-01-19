@@ -16,25 +16,24 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   AnimationController? _pulseController;
   AnimationController? _entryController;
   Animation<Offset>? _slideAnimation;
+  
+  // Track current file to avoid reload loops
+  String? _currentFilePath;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addObserver(this); // Listen for minimize/maximize
+    WidgetsBinding.instance.addObserver(this);
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
     _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
     _slideAnimation = Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
   }
 
-  // --- AUDIO GLITCH FIX: PAUSE ON MINIMIZE ---
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (_controller != null && _controller!.value.isInitialized) {
       if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
         _controller!.pause();
-      } else if (state == AppLifecycleState.resumed) {
-        // Optional: Auto-resume or stay paused
-        // _controller!.play(); 
       }
     }
   }
@@ -44,11 +43,39 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // Check if new content arrived
-    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != (oldWidget.key is ValueKey ? (oldWidget.key as ValueKey).value : null)) {
+    // 1. ANIMATION TRIGGER
+    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
+       _currentFilePath = service.lastReceivedFilePath; // Update Tracker
        _calculateEntryDirection(service);
        _entryController!.forward(from: 0);
+
+       // 2. VIDEO INITIALIZATION (Only if it's a video)
+       if (service.incomingContentType == 'video') {
+         _initializeVideo(File(service.lastReceivedFilePath!));
+       }
     }
+  }
+
+  // --- SAFE VIDEO LOADER ---
+  Future<void> _initializeVideo(File file) async {
+    // Dispose old controller first
+    final oldController = _controller;
+    if (oldController != null) {
+      await oldController.dispose();
+    }
+
+    // Create new controller
+    _controller = VideoPlayerController.file(file);
+    await _controller!.initialize();
+    
+    // Check if mounted before setState
+    if (!mounted) return;
+    
+    setState(() {
+       _controller!.play();
+       _controller!.setLooping(true);
+       _controller!.setVolume(1.0); // Ensure sound is on
+    });
   }
 
   void _calculateEntryDirection(SocketService service) {
@@ -102,19 +129,24 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 3. UNIFIED CANVAS (FULL SCREEN VIEWER)
+        // 3. FULL SCREEN VIEWER
         if (contentPath != null)
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
               child: Stack(
                 children: [
-                  Container(color: Colors.black), // Black background
+                  Container(color: Colors.black), 
 
-                  // CONTENT
+                  // CONTENT RENDERER
                   Center(
                     child: contentType == 'video' 
-                        ? _buildVideoPlayer(File(contentPath))
+                        ? (_controller != null && _controller!.value.isInitialized
+                            ? AspectRatio(
+                                aspectRatio: _controller!.value.aspectRatio,
+                                child: VideoPlayer(_controller!)
+                              )
+                            : const CircularProgressIndicator(color: Color(0xFF00E676))) // Show loading, NOT gray
                         : InteractiveViewer(
                             minScale: 1.0, maxScale: 4.0,
                             child: Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity)
@@ -126,7 +158,10 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                     top: 50, right: 20,
                     child: FloatingActionButton.small(
                       backgroundColor: Colors.white24,
-                      onPressed: () => socketService.clearView(),
+                      onPressed: () {
+                         socketService.clearView();
+                         _controller?.pause(); // Pause video when closing
+                      },
                       child: const Icon(Icons.close, color: Colors.white),
                     ),
                   ),
@@ -148,7 +183,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 4. MOUSE CURSOR
+        // 4. MOUSE
         if (socketService.showVirtualCursor)
            Positioned(left: socketService.virtualMousePos.dx, top: socketService.virtualMousePos.dy, child: const MouseCursorWidget()),
       ],
@@ -172,31 +207,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
       screenY = screenY.clamp(120.0, size.height - 120.0);
       return Positioned(left: screenX - 30, top: screenY - 30, child: Column(children: [Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: Colors.white10, shape: BoxShape.circle, border: Border.all(color: Colors.white24)), child: Icon(device['type'] == 'mobile' ? Icons.smartphone : Icons.computer, color: Colors.white70, size: 20)), const SizedBox(height: 4), Text(device['name'].toString().split(' [')[0], style: const TextStyle(color: Colors.white30, fontSize: 10))]));
     }).toList();
-  }
-
-  Widget _buildVideoPlayer(File file) {
-    if (_controller == null || _controller?.dataSource != file.path) {
-        _controller?.dispose();
-        // FORCE RELOAD ON NEW FILE
-        _controller = VideoPlayerController.file(file)..initialize().then((_) { 
-          setState(() {}); 
-          _controller!.play(); 
-          _controller!.setLooping(true); 
-        });
-    }
-    
-    // GRAY SCREEN FIX: Show Spinner until initialized
-    if (!_controller!.value.isInitialized) {
-       return const SizedBox(
-         width: 50, height: 50,
-         child: CircularProgressIndicator(color: Color(0xFF00E676))
-       );
-    }
-    
-    return AspectRatio(
-      aspectRatio: _controller!.value.aspectRatio,
-      child: VideoPlayer(_controller!)
-    );
   }
 }
 
