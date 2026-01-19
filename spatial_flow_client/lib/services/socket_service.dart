@@ -241,6 +241,80 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
+  // --- NEW: DIRECT TRANSFER TRIGGER ---
+  void triggerSwipeTransfer(double vx, double vy) {
+    if (_stagedFiles.isEmpty) return;
+
+    // 1. Calculate Swipe Direction (Normalized)
+    // Positive X = Right, Negative X = Left
+    // We only care about X for now since devices are usually side-by-side
+    int directionX = vx > 0 ? 1 : -1;
+
+    // 2. Find a Target Device in that direction
+    // Logic: Look for a device whose 'x' position matches my direction relative to me
+    // (Simplification: If I am 0, Left is -1, Right is 1)
+    
+    var me = _activeDevices.firstWhere((d) => d['id'] == _myId, orElse: () => null);
+    if (me == null) return;
+    
+    int myX = me['x'] ?? 0;
+    
+    var target = _activeDevices.firstWhere((d) {
+      if (d['id'] == _myId) return false;
+      int targetX = d['x'] ?? 0;
+      
+      // If swipe is RIGHT (vx > 0), target must be to the RIGHT of me (targetX > myX)
+      if (vx > 0 && targetX > myX) return true;
+      
+      // If swipe is LEFT (vx < 0), target must be to the LEFT of me (targetX < myX)
+      if (vx < 0 && targetX < myX) return true;
+      
+      return false;
+    }, orElse: () => null);
+
+    // 3. FORCE SEND (If target found)
+    if (target != null) {
+      print("Client-Side Trigger: Sending to ${target['name']}");
+      
+      // Mimic the 'transfer_request' logic locally
+      _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
+      notifyListeners();
+      
+      _executeFileTransfer(target['id']); // Call the internal sender
+    } else {
+      print("No target found in swipe direction!");
+      // Optional: Shake effect or visual cue
+    }
+  }
+
+  // Refactored the actual sending loop into a private function so we can call it from two places
+  Future<void> _executeFileTransfer(String targetId) async {
+     try {
+       for (var file in _stagedFiles) {
+         List<int> bytes = await file.readAsBytes();
+         String base64Data = base64Encode(bytes);
+         
+         _socket!.emit('file_payload', {
+           'targetId': targetId,
+           'senderId': _myId,
+           'fileData': base64Data,
+           'fileName': file.path.split('/').last,
+           'fileType': _stagedFileType
+         });
+         await Future.delayed(const Duration(milliseconds: 200)); 
+       }
+       _transferStatus = "SENT";
+       notifyListeners();
+       Future.delayed(const Duration(seconds: 2), () {
+         _transferStatus = "IDLE";
+         notifyListeners();
+       });
+     } catch (e) {
+       _transferStatus = "ERROR";
+       notifyListeners();
+     }
+  }
+  
   void sendSwipeData(Map<String, dynamic> data) {
     if (_socket != null) {
       data['senderId'] = _myId;
@@ -276,4 +350,5 @@ class SocketService with ChangeNotifier {
     });
   }
 }
+
 
