@@ -226,6 +226,14 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
+  // NEW: Clears the SENDER's selection
+  void clearStagedFiles() {
+    _stagedFiles = [];
+    _stagedFileType = 'file';
+    _transferStatus = "IDLE";
+    notifyListeners();
+  }
+  
   void broadcastContent(List<File> files, String type) {
     _stagedFiles = files;
     _stagedFileType = type;
@@ -268,3 +276,4 @@ class SocketService with ChangeNotifier {
     });
   }
 }
+
