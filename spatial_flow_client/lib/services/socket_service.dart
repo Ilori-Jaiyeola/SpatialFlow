@@ -104,12 +104,19 @@ class SocketService with ChangeNotifier {
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
       String deviceName = "Unknown Node";
       String type = Platform.isAndroid || Platform.isIOS ? "mobile" : "desktop";
+      
       if (Platform.isAndroid) {
         AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
         deviceName = androidInfo.model;
       } else if (Platform.isWindows) {
         WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
         deviceName = winInfo.computerName;
+      }
+      
+      // SANITIZATION FIX (Remove Mojibake)
+      // If name contains weird chars, fallback to simple name
+      if (deviceName.contains(RegExp(r'[^\x00-\x7F]'))) {
+         deviceName = type == 'mobile' ? "Android Device" : "PC Node";
       }
 
       _socket!.emit('register', {'name': deviceName, 'type': type});
@@ -317,4 +324,5 @@ class SocketService with ChangeNotifier {
     });
   }
 }
+
 
