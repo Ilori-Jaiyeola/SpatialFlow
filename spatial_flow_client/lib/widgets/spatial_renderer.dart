@@ -11,7 +11,7 @@ class SpatialRenderer extends StatefulWidget {
   State<SpatialRenderer> createState() => _SpatialRendererState();
 }
 
-class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderStateMixin {
+class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderStateMixin, WidgetsBindingObserver {
   VideoPlayerController? _controller;
   AnimationController? _pulseController;
   AnimationController? _entryController;
@@ -20,17 +20,32 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this); // Listen for minimize/maximize
     _pulseController = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
     _entryController = AnimationController(vsync: this, duration: const Duration(milliseconds: 600));
     _slideAnimation = Tween<Offset>(begin: const Offset(0, 1), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
+  }
+
+  // --- AUDIO GLITCH FIX: PAUSE ON MINIMIZE ---
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (_controller != null && _controller!.value.isInitialized) {
+      if (state == AppLifecycleState.paused || state == AppLifecycleState.detached) {
+        _controller!.pause();
+      } else if (state == AppLifecycleState.resumed) {
+        // Optional: Auto-resume or stay paused
+        // _controller!.play(); 
+      }
+    }
   }
 
   @override
   void didUpdateWidget(SpatialRenderer oldWidget) {
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
-    // Trigger animation if a NEW file path is detected
-    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != oldWidget.key) {
+    
+    // Check if new content arrived
+    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != (oldWidget.key is ValueKey ? (oldWidget.key as ValueKey).value : null)) {
        _calculateEntryDirection(service);
        _entryController!.forward(from: 0);
     }
@@ -50,6 +65,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
     _pulseController?.dispose();
     _entryController?.dispose();
@@ -68,7 +84,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
         // 1. RADAR
         ..._buildNetworkMap(socketService, context),
 
-        // 2. SWIPE GHOST
+        // 2. GHOST HAND
         if (swipeData != null && swipeData['isDragging'] == true)
           Positioned(
             left: (swipeData['x'] * MediaQuery.of(context).size.width),
@@ -93,10 +109,9 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             child: Positioned.fill(
               child: Stack(
                 children: [
-                  // BACKGROUND
-                  Container(color: Colors.black),
+                  Container(color: Colors.black), // Black background
 
-                  // CONTENT (Native Feel: Zoomable)
+                  // CONTENT
                   Center(
                     child: contentType == 'video' 
                         ? _buildVideoPlayer(File(contentPath))
@@ -106,7 +121,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                           ),
                   ),
                   
-                  // CLOSE BUTTON (Top Right)
+                  // CLOSE BUTTON
                   Positioned(
                     top: 50, right: 20,
                     child: FloatingActionButton.small(
@@ -116,7 +131,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                     ),
                   ),
 
-                  // BOTTOM ACTION BAR
+                  // OPEN BUTTON
                   Positioned(
                     bottom: 40, left: 0, right: 0,
                     child: Center(
@@ -124,7 +139,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                         style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676), foregroundColor: Colors.black),
                         onPressed: () => socketService.openLastFile(),
                         icon: const Icon(Icons.open_in_new),
-                        label: const Text("Open in Gallery App")
+                        label: const Text("Open in Gallery")
                       ),
                     ),
                   )
@@ -162,10 +177,26 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   Widget _buildVideoPlayer(File file) {
     if (_controller == null || _controller?.dataSource != file.path) {
         _controller?.dispose();
-        _controller = VideoPlayerController.file(file)..initialize().then((_) { setState(() {}); _controller!.play(); _controller!.setLooping(true); });
+        // FORCE RELOAD ON NEW FILE
+        _controller = VideoPlayerController.file(file)..initialize().then((_) { 
+          setState(() {}); 
+          _controller!.play(); 
+          _controller!.setLooping(true); 
+        });
     }
-    if (!_controller!.value.isInitialized) return const CircularProgressIndicator(color: Color(0xFF00E676));
-    return AspectRatio(aspectRatio: _controller!.value.aspectRatio, child: VideoPlayer(_controller!));
+    
+    // GRAY SCREEN FIX: Show Spinner until initialized
+    if (!_controller!.value.isInitialized) {
+       return const SizedBox(
+         width: 50, height: 50,
+         child: CircularProgressIndicator(color: Color(0xFF00E676))
+       );
+    }
+    
+    return AspectRatio(
+      aspectRatio: _controller!.value.aspectRatio,
+      child: VideoPlayer(_controller!)
+    );
   }
 }
 
