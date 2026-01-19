@@ -65,52 +65,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  void _onFilesDropped(List<XFile> files) {
-    if (files.isEmpty) return;
-    String ext = files.first.path.split('.').last.toLowerCase();
-    String type = (['mp4', 'mov', 'avi'].contains(ext)) ? 'video' : 'image';
-
-    setState(() {
-      _selectedFiles = files.map((x) => File(x.path)).toList();
-      _fileType = type;
-      _dragPosition = const Offset(100, 300); 
-    });
-    
-    if (type == 'video') _initVideoPlayer(_selectedFiles.first);
-    Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
-  }
-
+  // --- LOGIC ---
+  void _onFilesDropped(List<XFile> files) => _processFiles(files);
+  
   Future<void> _pickMedia(String type) async {
     final picker = ImagePicker();
     List<XFile> pickedFiles = [];
-    
     if (type == 'video') {
       final XFile? vid = await picker.pickVideo(source: ImageSource.gallery);
       if (vid != null) pickedFiles.add(vid);
     } else {
       pickedFiles = await picker.pickMultiImage();
     }
+    _processFiles(pickedFiles);
+  }
 
-    if (pickedFiles.isNotEmpty) {
-      setState(() {
-        _selectedFiles = pickedFiles.map((x) => File(x.path)).toList();
-        _fileType = type;
-        _dragPosition = const Offset(50, 200);
-      });
-      if (type == 'video') _initVideoPlayer(_selectedFiles.first);
-      Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
+  void _processFiles(List<XFile> files) {
+    if (files.isEmpty) return;
+    String ext = files.first.path.split('.').last.toLowerCase();
+    String type = (['mp4', 'mov', 'avi', 'mkv'].contains(ext) || _fileType == 'video') ? 'video' : 'image'; // Better detection
+
+    setState(() {
+      _selectedFiles = files.map((x) => File(x.path)).toList();
+      _fileType = type;
+      _dragPosition = const Offset(50, 200);
+    });
+
+    if (type == 'video') {
+       _initVideoPlayer(_selectedFiles.first);
     }
+    
+    Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
   void _initVideoPlayer(File file) {
     _senderVideoController?.dispose();
     _senderVideoController = VideoPlayerController.file(file)
       ..initialize().then((_) {
-        setState(() {});
+        setState(() {}); // Refresh to show video instead of gray box
+        _senderVideoController!.setVolume(0);
         _senderVideoController!.play();
         _senderVideoController!.setLooping(true);
-        _senderVideoController!.setVolume(0);
       });
+  }
+
+  void _clearSender() {
+    setState(() {
+      _selectedFiles = [];
+      _senderVideoController?.dispose();
+      _senderVideoController = null;
+    });
+    Provider.of<SocketService>(context, listen: false).clearStagedFiles();
   }
 
   @override
@@ -150,7 +155,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               _buildBackground(),
 
-              // UI LAYER
+              // 1. DASHBOARD UI
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
@@ -176,7 +181,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // SENDER PREVIEW (Fixed Aspect Ratio)
+              // 2. SENDER PREVIEW (Draggable, Zoomable, Closable)
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
@@ -184,7 +189,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildDraggableContent(context), 
                 ),
 
-              // RECEIVER LAYER (Full Screen)
+              // 3. RECEIVER RENDERER
               const SpatialRenderer(),
             ],
           ),
@@ -193,6 +198,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
+  // --- WIDGETS ---
   Widget _buildBackground() => Container(decoration: const BoxDecoration(gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: [Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)])));
   
   Widget _buildGlassStatusCard(SocketService service) { 
@@ -231,32 +237,60 @@ class _DashboardScreenState extends State<DashboardScreen> {
      return ListTile(title: Text(device['name'], style: const TextStyle(color: Colors.white)), subtitle: Text(device['id'] == myId ? "You" : "Peer", style: const TextStyle(color: Colors.white38)));
   }
 
-  // --- FIXED: DYNAMIC ASPECT RATIO PREVIEW ---
+  // --- FIXED: SENDER PREVIEW ---
   Widget _buildDraggableContent(BuildContext context) {
-    // Max Width constraint
-    double w = MediaQuery.of(context).size.width * 0.7;
-    
+    // Dynamic Size Constraints (Fixes PC Tray issue)
     return Container(
-      width: w, 
-      constraints: const BoxConstraints(minHeight: 200, maxHeight: 400),
+      constraints: BoxConstraints(
+        maxWidth: MediaQuery.of(context).size.width * 0.8,
+        maxHeight: MediaQuery.of(context).size.height * 0.6,
+        minWidth: 150,
+        minHeight: 150
+      ),
       decoration: BoxDecoration(
+        color: Colors.black, // Dark background
         borderRadius: BorderRadius.circular(20),
         boxShadow: const [BoxShadow(color: Colors.black45, blurRadius: 20, spreadRadius: 5)],
         border: Border.all(color: Colors.white.withOpacity(0.5), width: 1),
-        color: Colors.black, // Background in case aspect ratio has gaps
       ),
       child: Stack(
         children: [
+          // 1. CONTENT (Zoomable)
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
-            child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
-                ? AspectRatio(aspectRatio: _senderVideoController!.value.aspectRatio, child: VideoPlayer(_senderVideoController!))
-                : (_selectedFiles.isNotEmpty 
-                    ? Image.file(_selectedFiles.first, fit: BoxFit.contain) 
-                    : Container(color: Colors.grey)),
+            child: InteractiveViewer(
+              child: _fileType == 'video' && _senderVideoController != null && _senderVideoController!.value.isInitialized
+                  ? AspectRatio(
+                      aspectRatio: _senderVideoController!.value.aspectRatio,
+                      child: VideoPlayer(_senderVideoController!)
+                    )
+                  : Image.file(_selectedFiles.first, fit: BoxFit.contain), // Use Contain to see whole image
+            ),
           ),
+          
+          // 2. CLOSE BUTTON (New)
+          Positioned(
+            top: 5, right: 5,
+            child: GestureDetector(
+              onTap: _clearSender,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+                child: const Icon(Icons.close, color: Colors.white, size: 20),
+              ),
+            ),
+          ),
+
+          // 3. MULTI-FILE BADGE
           if (_selectedFiles.length > 1)
-            Positioned(right: 10, top: 10, child: Container(padding: const EdgeInsets.all(8), decoration: const BoxDecoration(color: Color(0xFF00E676), shape: BoxShape.circle), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold))))
+            Positioned(
+              left: 10, top: 10, 
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), 
+                decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), 
+                child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))
+              )
+            )
         ],
       ),
     );
@@ -271,7 +305,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
   
   void _showManualConnectDialog(BuildContext context, SocketService service) { 
-      // (Same as before)
       TextEditingController ipController = TextEditingController(text: "192.168.");
       showDialog(context: context, builder: (context) => AlertDialog(backgroundColor: const Color(0xFF1E1E1E), title: const Text("Manual Connection", style: TextStyle(color: Colors.white)), content: TextField(controller: ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54))), actions: [ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)), onPressed: () { Navigator.pop(context); if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim()); }, child: const Text("Connect", style: TextStyle(color: Colors.black)))]));
   }
