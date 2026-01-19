@@ -17,7 +17,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   AnimationController? _entryController;
   Animation<Offset>? _slideAnimation;
   
-  // Track current file to avoid reload loops
   String? _currentFilePath;
 
   @override
@@ -43,38 +42,30 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // 1. ANIMATION TRIGGER
     if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
-       _currentFilePath = service.lastReceivedFilePath; // Update Tracker
+       _currentFilePath = service.lastReceivedFilePath; 
        _calculateEntryDirection(service);
        _entryController!.forward(from: 0);
 
-       // 2. VIDEO INITIALIZATION (Only if it's a video)
        if (service.incomingContentType == 'video') {
          _initializeVideo(File(service.lastReceivedFilePath!));
        }
     }
   }
 
-  // --- SAFE VIDEO LOADER ---
   Future<void> _initializeVideo(File file) async {
-    // Dispose old controller first
     final oldController = _controller;
-    if (oldController != null) {
-      await oldController.dispose();
-    }
+    if (oldController != null) await oldController.dispose();
 
-    // Create new controller
     _controller = VideoPlayerController.file(file);
     await _controller!.initialize();
     
-    // Check if mounted before setState
     if (!mounted) return;
     
     setState(() {
        _controller!.play();
        _controller!.setLooping(true);
-       _controller!.setVolume(1.0); // Ensure sound is on
+       _controller!.setVolume(1.0);
     });
   }
 
@@ -129,7 +120,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 3. FULL SCREEN VIEWER
+        // 3. FULL SCREEN VIEWER (With Image Fixes)
         if (contentPath != null)
           SlideTransition(
             position: _slideAnimation!,
@@ -146,10 +137,39 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                                 aspectRatio: _controller!.value.aspectRatio,
                                 child: VideoPlayer(_controller!)
                               )
-                            : const CircularProgressIndicator(color: Color(0xFF00E676))) // Show loading, NOT gray
+                            : const CircularProgressIndicator(color: Color(0xFF00E676))) 
                         : InteractiveViewer(
                             minScale: 1.0, maxScale: 4.0,
-                            child: Image.file(File(contentPath), fit: BoxFit.contain, width: double.infinity, height: double.infinity)
+                            // --- FIXED IMAGE RENDERER ---
+                            child: Image.file(
+                              File(contentPath), 
+                              key: ValueKey(contentPath), // FORCE REFRESH
+                              fit: BoxFit.contain, 
+                              width: double.infinity, 
+                              height: double.infinity,
+                              gaplessPlayback: true, // PREVENTS FLICKER
+                              // 1. LOADING BUILDER
+                              frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+                                if (wasSynchronouslyLoaded) return child;
+                                return AnimatedOpacity(
+                                  child: child,
+                                  opacity: frame == null ? 0 : 1,
+                                  duration: const Duration(milliseconds: 300),
+                                  curve: Curves.easeOut,
+                                );
+                              },
+                              // 2. ERROR BUILDER
+                              errorBuilder: (context, error, stackTrace) {
+                                return Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    const Icon(Icons.broken_image, color: Colors.red, size: 50),
+                                    const SizedBox(height: 10),
+                                    Text("Image Load Failed\n$error", textAlign: TextAlign.center, style: const TextStyle(color: Colors.white54))
+                                  ],
+                                );
+                              },
+                            )
                           ),
                   ),
                   
@@ -160,7 +180,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                       backgroundColor: Colors.white24,
                       onPressed: () {
                          socketService.clearView();
-                         _controller?.pause(); // Pause video when closing
+                         _controller?.pause(); 
                       },
                       child: const Icon(Icons.close, color: Colors.white),
                     ),
@@ -190,7 +210,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
-  // --- HELPERS ---
+  // --- HELPERS (No changes) ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
