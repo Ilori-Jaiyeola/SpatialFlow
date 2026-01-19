@@ -19,6 +19,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   
   String? _currentFilePath;
   bool _isVideoInitialized = false;
+  bool _isFileReady = false; // New Flag
 
   @override
   void initState() {
@@ -46,23 +47,41 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     // DETECT NEW FILE
     if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
        _currentFilePath = service.lastReceivedFilePath; 
-       
-       // 1. CACHE BUSTING (The Fix)
+       _isFileReady = false; // Reset readiness
+
+       // 1. Cache Busting
        if (service.incomingContentType != 'video') {
-         // Force clear image from cache to prevent "Grey Screen"
          FileImage(File(_currentFilePath!)).evict();
        }
 
-       File file = File(_currentFilePath!);
-       if (file.existsSync() && file.lengthSync() > 0) {
-           _calculateEntryDirection(service);
-           _entryController!.forward(from: 0);
-
-           if (service.incomingContentType == 'video') {
-             _initializeVideo(file);
-           }
-       }
+       // 2. Start Integrity Check
+       _waitForFileIntegrity(File(_currentFilePath!), service);
     }
+  }
+
+  // --- NEW: WAIT FOR FILE TO BE FULLY WRITTEN ---
+  Future<void> _waitForFileIntegrity(File file, SocketService service) async {
+    int retries = 0;
+    while (retries < 5) {
+       if (await file.exists() && await file.length() > 0) {
+          // File is good!
+          if (!mounted) return;
+          setState(() {
+             _isFileReady = true; // Unlock the view
+          });
+
+          _calculateEntryDirection(service);
+          _entryController!.forward(from: 0);
+
+          if (service.incomingContentType == 'video') {
+            _initializeVideo(file);
+          }
+          return;
+       }
+       await Future.delayed(const Duration(milliseconds: 300)); // Wait 300ms
+       retries++;
+    }
+    print("File Integrity Failed: File never became valid.");
   }
 
   Future<void> _initializeVideo(File file) async {
@@ -136,7 +155,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
           ),
 
         // 3. FULL SCREEN VIEWER
-        if (contentPath != null)
+        if (contentPath != null && _isFileReady) // Only show if Integrity Check Passed
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
@@ -156,7 +175,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                             minScale: 1.0, maxScale: 4.0,
                             child: Image.file(
                               File(contentPath), 
-                              key: UniqueKey(), // Forces Fresh Render
+                              key: UniqueKey(), 
                               fit: BoxFit.contain, 
                               gaplessPlayback: true,
                               errorBuilder: (context, error, stackTrace) => const Column(
@@ -204,6 +223,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
+  // --- HELPERS (No Changes) ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
