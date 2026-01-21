@@ -1,169 +1,157 @@
 const express = require('express');
-const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http, {
-    pingInterval: 2000, 
-    pingTimeout: 5000,
-    cors: { origin: "*" },
-    maxHttpBufferSize: 1e8 // Allow files up to 100MB
-});
+const http = require('http');
+const { Server } = require('socket.io');
 const dgram = require('dgram');
 const os = require('os');
 
-const UDP_PORT = 8888;
-const TCP_PORT = 3000;
+// --- SETUP ---
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    maxHttpBufferSize: 1e8, // 100 MB Limit for large video files
+    cors: { origin: "*" }
+});
 
-// =========================================================
-// 1. OMNI-BROADCASTING (Connection Stability)
-// =========================================================
-function getBroadcastAddresses() {
+// --- STATE MANAGEMENT ---
+let activeDevices = [];
+
+// --- LOGGING SYSTEM (The Control Tower) ---
+function log(tag, message, data = "") {
+    const time = new Date().toISOString().split('T')[1].split('.')[0];
+    const color = {
+        'INFO': '\x1b[36m', // Cyan
+        'SWIPE': '\x1b[35m', // Magenta
+        'FILE': '\x1b[33m', // Yellow
+        'MOUSE': '\x1b[32m', // Green
+        'CLIP': '\x1b[34m', // Blue
+        'ERROR': '\x1b[31m', // Red
+        'RESET': '\x1b[0m'
+    };
+    console.log(`${color['RESET']}[${time}] ${color[tag] || ''}[${tag}] ${message} ${data ? JSON.stringify(data) : ''}${color['RESET']}`);
+}
+
+// --- 1. OMNI-BROADCASTING (UDP Discovery) ---
+const udpSocket = dgram.createSocket('udp4');
+udpSocket.bind(8888, () => {
+    udpSocket.setBroadcast(true);
+    log('INFO', 'UDP Beacon Active on Port 8888');
+});
+
+function getLocalIP() {
     const interfaces = os.networkInterfaces();
-    const addresses = [];
     for (const name of Object.keys(interfaces)) {
-        for (const net of interfaces[name]) {
-            if (net.family === 'IPv4' && !net.internal) {
-                const parts = net.address.split('.');
-                parts[3] = '255'; 
-                addresses.push({ ip: net.address, broadcast: parts.join('.') });
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
             }
         }
     }
-    return addresses;
+    return '127.0.0.1';
 }
 
-const udpSocket = dgram.createSocket('udp4');
-udpSocket.bind(() => {
-    udpSocket.setBroadcast(true);
-    console.log("--- NEURAL CORE DISCOVERY ACTIVE ---");
-});
-
+// Broadcast IP every second so devices can find the server automatically
 setInterval(() => {
-    const addresses = getBroadcastAddresses();
-    if (addresses.length === 0) return;
-    addresses.forEach(addr => {
-        const message = Buffer.from(`SPATIAL_ANNOUNCE|${addr.ip}`);
-        try {
-            udpSocket.send(message, 0, message.length, UDP_PORT, addr.broadcast);
-            udpSocket.send(message, 0, message.length, UDP_PORT, "255.255.255.255");
-        } catch (e) {}
-    });
+    const message = Buffer.from(`SPATIAL_ANNOUNCE|${getLocalIP()}`);
+    udpSocket.send(message, 0, message.length, 8888, '255.255.255.255');
 }, 1000);
 
-// =========================================================
-// 2. VECTOR MATH (Smart Swipe Logic)
-// =========================================================
-let devices = [];
-
-function findTargetDevice(sender, swipeData) {
-    const { velocityX, velocityY } = swipeData;
-    const magnitude = Math.sqrt(velocityX * velocityX + velocityY * velocityY);
-    if (magnitude === 0) return null;
-    
-    const normVx = velocityX / magnitude;
-    const normVy = velocityY / magnitude;
-
-    let bestTarget = null;
-    let maxDotProduct = -1.0; 
-
-    devices.forEach(target => {
-        if (target.id === sender.id) return; 
-
-        const dx = target.x - sender.x;
-        const dy = target.y - sender.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist === 0) return;
-        
-        const normDx = dx / dist;
-        const normDy = dy / dist;
-
-        const dotProduct = (normVx * normDx) + (normVy * normDy);
-
-        if (dotProduct > 0.5 && dotProduct > maxDotProduct) {
-            maxDotProduct = dotProduct;
-            bestTarget = target;
-        }
-    });
-    return bestTarget;
-}
-
-// =========================================================
-// 3. SOCKET LOGIC (The Brain)
-// =========================================================
+// --- 2. SOCKET LOGIC (The Neural Core) ---
 io.on('connection', (socket) => {
-    console.log(`Node Connected: ${socket.id}`);
+    const clientIp = socket.handshake.address;
+    log('INFO', `New Connection: ${socket.id} from ${clientIp}`);
 
-    // --- A. REGISTRATION & TOPOLOGY ---
-    socket.on('register', (info) => {
-        const clientIp = socket.handshake.address.replace('::ffff:', '');
-        devices = devices.filter(d => d.ip !== clientIp);
-
-        // Auto-assign: Center(0,0), Left(-1,0), Right(1,0), Top(0,-1)
-        const newDevice = {
-            id: socket.id,
-            name: info.name,
-            type: info.type,
-            ip: clientIp,
-            x: devices.length === 0 ? 0 : (devices.length % 2 === 0 ? 1 : -1),
-            y: 0
-        };
+    // A. DEVICE REGISTRATION & POSITIONING
+    socket.on('register', (device) => {
+        device.id = socket.id;
+        device.ip = clientIp;
         
-        devices.push(newDevice);
-        console.log(`Device Registered: ${newDevice.name} at [${newDevice.x}, ${newDevice.y}]`);
+        // Smart Positioning Logic:
+        // First device = Left (-1), Second device = Right (1)
+        // This enables the "Vector Math" on the client to know which way to swipe.
+        device.x = activeDevices.length === 0 ? -1 : 1; 
+        device.y = 0;
+
+        activeDevices.push(device);
+        
+        log('INFO', `Device Registered: ${device.name} (${device.type}) at X:${device.x}`);
         
         socket.emit('register_confirm', { id: socket.id });
-        io.emit('device_list', devices);
+        io.emit('device_list', activeDevices);
     });
 
-    // --- B. SWIPE & FILE TRANSFER ---
+    // B. REMOTE LOGGING (The Telemetry Relay)
+    socket.on('remote_log', (data) => {
+        const device = activeDevices.find(d => d.id === socket.id);
+        const name = device ? device.name : "Unknown";
+        
+        // 1. Show in Server Terminal
+        console.log(`\x1b[33m[REMOTE] [${name}]: ${data.message}\x1b[0m`);
+        
+        // 2. Relay to PC (for debugging without looking at server)
+        socket.broadcast.emit('debug_broadcast', { 
+            sender: name, 
+            message: data.message 
+        });
+    });
+
+    // C. VECTOR SWIPE LOGIC
     socket.on('swipe_event', (data) => {
-        const sender = devices.find(d => d.id === socket.id);
-        if (!sender) return;
+        // Relay gesture data to all other devices so they can render the "Ghost Hand"
+        socket.broadcast.emit('swipe_event', data);
 
-        const velocityX = data.vx || 0;
-        const velocityY = data.vy || 0;
-
-        // CHANGED: Lower threshold from 100 to 20 for easier triggering
-        // Also added check for "isDragging: false" (Release event)
-        if (data.action === 'release' && (Math.abs(velocityX) > 20 || Math.abs(velocityY) > 20)) {
-            const target = findTargetDevice(sender, { velocityX, velocityY });
-
-            if (target) {
-                console.log(`Routed Swipe: ${sender.name} -> ${target.name}`);
-                io.to(target.id).emit('swipe_event', { ...data, senderId: sender.id });
-                socket.emit('transfer_request', { targetId: target.id }); 
-            }
-        } else {
-            // Soft Drag = Visual Ghost Hand
-            socket.broadcast.emit('swipe_event', data);
+        if (data.action === 'release') {
+            log('SWIPE', `Gesture Released by ${data.senderId}`, { velocity: data.vx });
         }
     });
 
+    // D. HOLOGRAM PROTOCOL (Header)
+    socket.on('preview_header', (data) => {
+        const target = activeDevices.find(d => d.id === data.targetId);
+        const targetName = target ? target.name : "Unknown";
+        
+        log('FILE', `Sending Hologram (${data.fileType})`, { to: targetName, size: data.thumbnail.length });
+
+        // Direct routing to target
+        io.to(data.targetId).emit('preview_header', data);
+    });
+
+    // E. FILE TRANSFER (Payload)
     socket.on('file_payload', (data) => {
-        console.log(`Relaying File (${data.fileName}) -> ${data.targetId}`);
+        const target = activeDevices.find(d => d.id === data.targetId);
+        const targetName = target ? target.name : "Unknown";
+
+        log('FILE', `Transferring Content: ${data.fileName}`, { to: targetName });
+
         io.to(data.targetId).emit('content_transfer', data);
     });
 
-    // --- C. UNIFIED CANVAS: SHARED CLIPBOARD ---
-    socket.on('clipboard_sync', (data) => {
-        console.log(`Clipboard Sync from ${socket.id}`);
-        // Broadcast to EVERYONE (Universal Clipboard)
-        socket.broadcast.emit('clipboard_sync', { text: data.text });
+    // F. UNIFIED CANVAS: MOUSE TELEPORT
+    socket.on('mouse_teleport', (data) => {
+        // Relay mouse deltas to move the virtual cursor on the other screen
+        socket.broadcast.emit('mouse_teleport', data);
     });
 
-    // --- D. UNIFIED CANVAS: MOUSE TELEPORT ---
-    socket.on('mouse_teleport', (data) => {
-        // Relay cursor movement directly to target
-        io.to(data.targetId).emit('mouse_teleport', data);
+    // G. UNIFIED CANVAS: SHARED CLIPBOARD
+    socket.on('clipboard_sync', (data) => {
+        log('CLIP', `Clipboard Synced`, { textLength: data.text.length });
+        socket.broadcast.emit('clipboard_sync', data);
+    });
+
+    // H. CONNECTION STABILITY
+    socket.on('heartbeat', () => {
+        // Keep connection alive
     });
 
     socket.on('disconnect', () => {
-        devices = devices.filter(d => d.id !== socket.id);
-        io.emit('device_list', devices);
+        const device = activeDevices.find(d => d.id === socket.id);
+        if (device) log('INFO', `Device Disconnected: ${device.name}`);
+        
+        activeDevices = activeDevices.filter(d => d.id !== socket.id);
+        io.emit('device_list', activeDevices);
     });
 });
 
-const addrs = getBroadcastAddresses().map(a => a.ip).join(', ');
-http.listen(TCP_PORT, '0.0.0.0', () => {
-    console.log(`NEURAL CORE v2.5 ONLINE. Listening on: [${addrs}]`);
+const PORT = 3000;
+server.listen(PORT, '0.0.0.0', () => {
+    log('INFO', `Neural Core Online at http://${getLocalIP()}:${PORT}`);
 });
-
