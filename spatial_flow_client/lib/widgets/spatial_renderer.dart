@@ -3,7 +3,6 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../services/socket_service.dart';
 import 'dart:io';
-import 'dart:typed_data';
 
 class SpatialRenderer extends StatefulWidget {
   const SpatialRenderer({Key? key}) : super(key: key);
@@ -20,6 +19,8 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   
   String? _currentFilePath;
   bool _isVideoInitialized = false;
+  // STATE TRACKER
+  bool _isAnimatingIn = false;
 
   @override
   void initState() {
@@ -44,20 +45,33 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // Check if we have FRESH data
-    bool hasNewFile = service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath;
-    bool hasRamData = service.lastReceivedBytes != null;
+    // 1. TRIGGER START (When isReceiving turns True)
+    if (service.isReceiving && !_isAnimatingIn) {
+       _isAnimatingIn = true;
+       _currentFilePath = null; // Clear old file
+       _calculateEntryDirection(service);
+       _entryController!.forward(from: 0); // SLIDE IN NOW
+    }
 
-    if (hasNewFile && hasRamData) {
+    // 2. TRIGGER STOP/RESET
+    if (!service.isReceiving) {
+      _isAnimatingIn = false;
+      _currentFilePath = null;
+    }
+
+    // 3. FILE ARRIVED
+    if (service.isReceiving && service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
        _currentFilePath = service.lastReceivedFilePath; 
        
-       // Trigger Animation
-       _calculateEntryDirection(service);
-       _entryController!.forward(from: 0);
+       // Force Cache Clear
+       if (service.incomingContentType != 'video') {
+         FileImage(File(_currentFilePath!)).evict();
+       }
 
        if (service.incomingContentType == 'video') {
          _initializeVideo(File(service.lastReceivedFilePath!));
        }
+       // Note: We don't trigger animation here because it already ran in Step 1
     }
   }
 
@@ -106,10 +120,9 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     final swipeData = socketService.incomingSwipeData;
     final contentPath = socketService.lastReceivedFilePath;
     final contentType = socketService.incomingContentType;
-    final ramBytes = socketService.lastReceivedBytes;
-
-    // Determine if we should show content
-    bool showContent = ramBytes != null || contentPath != null;
+    
+    // Is the Container Active?
+    bool showContainer = socketService.isReceiving;
 
     return Stack(
       children: [
@@ -134,8 +147,8 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
 
-        // 3. FULL SCREEN VIEWER
-        if (showContent)
+        // 3. FULL SCREEN UNIFIED CONTAINER
+        if (showContainer)
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
@@ -144,31 +157,39 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                   Container(color: Colors.black), 
 
                   Center(
-                    child: contentType == 'video' 
-                        ? (_isVideoInitialized && _controller != null
-                            // VIDEO RENDERER (FittedBox Fix)
-                            ? FittedBox(
-                                fit: BoxFit.contain,
-                                child: SizedBox(
-                                  width: _controller!.value.size.width,
-                                  height: _controller!.value.size.height,
-                                  child: VideoPlayer(_controller!),
-                                ),
-                              )
-                            : const CircularProgressIndicator(color: Color(0xFF00E676))) 
-                        // IMAGE RENDERER (RAM)
-                        : (ramBytes != null 
-                             ? InteractiveViewer(
+                    child: _currentFilePath == null
+                        // A. LOADING STATE (Placeholder Slide-In)
+                        ? Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                               CircularProgressIndicator(color: const Color(0xFF00E676)),
+                               const SizedBox(height: 20),
+                               Text("Incoming ${socketService.incomingPlaceholderType}...", style: const TextStyle(color: Colors.white70, letterSpacing: 2))
+                            ],
+                          )
+                        // B. CONTENT STATE (File Arrived)
+                        : (contentType == 'video' 
+                            ? (_isVideoInitialized && _controller != null && _controller!.value.size.width > 0
+                                ? FittedBox(
+                                    fit: BoxFit.contain,
+                                    child: SizedBox(
+                                      width: _controller!.value.size.width,
+                                      height: _controller!.value.size.height,
+                                      child: VideoPlayer(_controller!),
+                                    ),
+                                  )
+                                : const CircularProgressIndicator(color: Color(0xFF00E676))) 
+                            : InteractiveViewer(
                                  minScale: 1.0, maxScale: 4.0,
-                                 child: Image.memory(
-                                    ramBytes, 
-                                    key: UniqueKey(),
+                                 child: Image.file(
+                                    File(_currentFilePath!), 
+                                    key: ValueKey(_currentFilePath), 
                                     fit: BoxFit.contain, 
                                     gaplessPlayback: true,
                                     errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.red, size: 50),
                                  )
-                               )
-                             : const CircularProgressIndicator(color: Color(0xFF00E676)))
+                              )
+                          ),
                   ),
                   
                   // CLOSE BUTTON
@@ -184,32 +205,19 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                     ),
                   ),
 
-                  // SIZE INDICATOR (Debug Info)
-                  if (ramBytes != null)
+                  // OPEN BUTTON
+                  if (_currentFilePath != null)
                     Positioned(
-                      top: 50, left: 20,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                        color: Colors.black54,
-                        child: Text(
-                          "${(ramBytes.lengthInBytes / 1024 / 1024).toStringAsFixed(2)} MB",
-                          style: const TextStyle(color: Colors.white, fontSize: 10),
+                      bottom: 40, left: 0, right: 0,
+                      child: Center(
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676), foregroundColor: Colors.black),
+                          onPressed: () => socketService.openLastFile(),
+                          icon: const Icon(Icons.open_in_new),
+                          label: const Text("Open in Gallery")
                         ),
                       ),
-                    ),
-
-                  // OPEN BUTTON
-                  Positioned(
-                    bottom: 40, left: 0, right: 0,
-                    child: Center(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676), foregroundColor: Colors.black),
-                        onPressed: () => socketService.openLastFile(),
-                        icon: const Icon(Icons.open_in_new),
-                        label: const Text("Open in Gallery")
-                      ),
-                    ),
-                  )
+                    )
                 ],
               ),
             ),
@@ -222,7 +230,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
-  // ... (Helpers Unchanged) ...
+  // ... (Helpers Unchanged)
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
