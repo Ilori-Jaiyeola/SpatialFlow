@@ -39,14 +39,30 @@ udpSocket.bind(8888, () => {
 
 function getLocalIP() {
     const interfaces = os.networkInterfaces();
+    let candidates = [];
+
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
+            // Must be IPv4 and NOT internal (localhost)
             if (iface.family === 'IPv4' && !iface.internal) {
-                return iface.address;
+                const ip = iface.address;
+                
+                // RULE 1: IGNORE VirtualBox / VMware (192.168.56.x)
+                if (ip.startsWith('192.168.56.')) continue;
+                
+                // RULE 2: PRIORITIZE Home/Office Wi-Fi (192.168.0.x or 192.168.1.x)
+                if (ip.startsWith('192.168.0.') || ip.startsWith('192.168.1.') || ip.startsWith('172.')) {
+                    return ip; // Found the best candidate, return immediately!
+                }
+
+                // Keep others (like 10.x.x.x) as backups
+                candidates.push(ip);
             }
         }
     }
-    return '127.0.0.1';
+    
+    // If no perfect home match, return the first valid backup
+    return candidates.length > 0 ? candidates[0] : '127.0.0.1';
 }
 
 // Broadcast IP every second so devices can find the server automatically
@@ -155,3 +171,4 @@ const PORT = 3000;
 server.listen(PORT, '0.0.0.0', () => {
     log('INFO', `Neural Core Online at http://${getLocalIP()}:${PORT}`);
 });
+
