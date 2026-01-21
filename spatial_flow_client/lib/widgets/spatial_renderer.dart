@@ -44,19 +44,18 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // TRIGGER ON RAM BYTES OR FILE PATH CHANGE
-    // This condition ensures animation runs even if file isn't written yet
-    bool hasNewBytes = service.lastReceivedBytes != null && service.lastReceivedFilePath != _currentFilePath;
-    
-    if (hasNewBytes) {
+    // Check if we have FRESH data
+    bool hasNewFile = service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath;
+    bool hasRamData = service.lastReceivedBytes != null;
+
+    if (hasNewFile && hasRamData) {
        _currentFilePath = service.lastReceivedFilePath; 
        
-       // Trigger Animation Immediately
+       // Trigger Animation
        _calculateEntryDirection(service);
        _entryController!.forward(from: 0);
 
-       // Handle Video Initialization (Still needs file)
-       if (service.incomingContentType == 'video' && service.lastReceivedFilePath != null) {
+       if (service.incomingContentType == 'video') {
          _initializeVideo(File(service.lastReceivedFilePath!));
        }
     }
@@ -109,7 +108,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     final contentType = socketService.incomingContentType;
     final ramBytes = socketService.lastReceivedBytes;
 
-    // Condition: Show if we have RAM bytes OR a file path
+    // Determine if we should show content
     bool showContent = ramBytes != null || contentPath != null;
 
     return Stack(
@@ -147,18 +146,23 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                   Center(
                     child: contentType == 'video' 
                         ? (_isVideoInitialized && _controller != null
-                            ? AspectRatio(
-                                aspectRatio: _controller!.value.aspectRatio,
-                                child: VideoPlayer(_controller!)
+                            // VIDEO RENDERER (FittedBox Fix)
+                            ? FittedBox(
+                                fit: BoxFit.contain,
+                                child: SizedBox(
+                                  width: _controller!.value.size.width,
+                                  height: _controller!.value.size.height,
+                                  child: VideoPlayer(_controller!),
+                                ),
                               )
                             : const CircularProgressIndicator(color: Color(0xFF00E676))) 
-                        // --- RAM PREVIEW RENDERER ---
+                        // IMAGE RENDERER (RAM)
                         : (ramBytes != null 
                              ? InteractiveViewer(
                                  minScale: 1.0, maxScale: 4.0,
                                  child: Image.memory(
-                                    ramBytes, // RAM Data
-                                    key: UniqueKey(), // Force Refresh
+                                    ramBytes, 
+                                    key: UniqueKey(),
                                     fit: BoxFit.contain, 
                                     gaplessPlayback: true,
                                     errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.red, size: 50),
@@ -179,6 +183,20 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                       child: const Icon(Icons.close, color: Colors.white),
                     ),
                   ),
+
+                  // SIZE INDICATOR (Debug Info)
+                  if (ramBytes != null)
+                    Positioned(
+                      top: 50, left: 20,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        color: Colors.black54,
+                        child: Text(
+                          "${(ramBytes.lengthInBytes / 1024 / 1024).toStringAsFixed(2)} MB",
+                          style: const TextStyle(color: Colors.white, fontSize: 10),
+                        ),
+                      ),
+                    ),
 
                   // OPEN BUTTON
                   Positioned(
@@ -204,7 +222,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
-  // --- HELPERS (Unchanged) ---
+  // ... (Helpers Unchanged) ...
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
