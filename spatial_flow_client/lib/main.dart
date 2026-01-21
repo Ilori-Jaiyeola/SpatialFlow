@@ -136,9 +136,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return DropTarget(
       onDragDone: (details) => _onFilesDropped(details.files),
       child: SpatialGestureLayer(
-        extraData: _fileType == 'video' && _senderVideoController != null 
-            ? {'timestamp': _senderVideoController!.value.position.inMilliseconds}
-            : {},
+        // NEW: SEND FILE TYPE IN THE SWIPE DATA
+        extraData: {
+           'fileType': _fileType ?? 'image', // Tell receiver what is coming
+           'timestamp': _fileType == 'video' && _senderVideoController != null 
+               ? _senderVideoController!.value.position.inMilliseconds 
+               : 0
+        },
         onDragUpdate: (details) {
           setState(() => _dragPosition += details.delta);
         },
@@ -380,3 +384,4 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     );
   }
 }
+
