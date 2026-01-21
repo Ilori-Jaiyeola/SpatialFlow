@@ -107,9 +107,13 @@ class SocketService with ChangeNotifier {
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
+            
+            // IF RELEASED: Trigger Receiving
             if (data['action'] == 'release') {
                 _isReceiving = true;
                 _transferStatus = "INCOMING...";
+                // Clear drag data so Ghost Hand disappears and Canvas takes over
+                _incomingSwipeData!['isDragging'] = false; 
                 notifyListeners();
             } else {
                notifyListeners();
@@ -265,3 +269,4 @@ class SocketService with ChangeNotifier {
     notifyListeners(); 
   }
 }
+
