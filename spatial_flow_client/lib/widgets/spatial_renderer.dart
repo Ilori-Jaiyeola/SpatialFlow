@@ -14,9 +14,8 @@ class SpatialRenderer extends StatefulWidget {
 class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderStateMixin {
   VideoPlayerController? _controller;
   AnimationController? _entryController;
-  AnimationController? _pulseController; // For Ghost Hand
+  AnimationController? _pulseController;
   Animation<Offset>? _slideAnimation;
-  
   bool _isVideoReady = false;
 
   @override
@@ -32,13 +31,13 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // OPEN CANVAS: When receiving starts
+    // OPEN CANVAS: Only on Release (Receiving)
     if (service.isReceiving && _entryController!.status == AnimationStatus.dismissed) {
         _calculateEntryDirection(service);
         _entryController!.forward();
     }
     
-    // CLOSE CANVAS: When view cleared
+    // CLOSE CANVAS
     if (!service.isReceiving && _entryController!.status == AnimationStatus.completed) {
         _entryController!.reverse();
         _controller?.dispose();
@@ -46,7 +45,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
         _isVideoReady = false;
     }
 
-    // VIDEO LOAD: When file arrives
+    // LOAD VIDEO
     if (service.lastReceivedFilePath != null && service.incomingContentType == 'video' && _controller == null) {
         _initVideo(File(service.lastReceivedFilePath!));
     }
@@ -81,18 +80,28 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     final service = Provider.of<SocketService>(context);
     final swipeData = service.incomingSwipeData;
     
-    // LAYERED RENDERING
+    // SAFETY CHECK 1: PREVENT SELF-RENDERING
+    // If I am the sender, do not render this view (it blocks the dashboard)
+    if (swipeData != null && swipeData['senderId'] == service.myId) {
+      return const SizedBox();
+    }
+
+    bool isDragging = swipeData != null && swipeData['isDragging'] == true;
+    
+    // LOGIC: Show Canvas only if NOT dragging and (Receiving OR Has File)
+    // This ensures Layer 3 (Black BG) doesn't cover Layer 2 (Ghost Hand)
+    bool showCanvas = !isDragging && (service.isReceiving || service.lastReceivedFilePath != null);
+
     return Stack(
       children: [
-        // LAYER 1: RADAR (Always at bottom)
+        // LAYER 1: RADAR (Background)
         ..._buildNetworkMap(service, context),
 
-        // LAYER 2: GHOST HAND & MOUSE (Transparent Interaction Layer)
-        // This is visible even if isReceiving is FALSE.
-        if (swipeData != null && swipeData['isDragging'] == true)
+        // LAYER 2: GHOST HAND (Interaction)
+        if (isDragging)
           Positioned(
-            left: (swipeData['x'] * MediaQuery.of(context).size.width),
-            top: (swipeData['y'] * MediaQuery.of(context).size.height),
+            left: (swipeData['x'] * MediaQuery.of(context).size.width).clamp(0.0, MediaQuery.of(context).size.width - 120),
+            top: (swipeData['y'] * MediaQuery.of(context).size.height).clamp(0.0, MediaQuery.of(context).size.height - 160),
             child: FadeTransition(
               opacity: _pulseController!,
               child: Transform.rotate(
@@ -118,6 +127,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             ),
           ),
           
+        // LAYER 2.5: MOUSE
         if (service.showVirtualCursor)
            Positioned(
              left: service.virtualMousePos.dx, 
@@ -125,21 +135,20 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
              child: const MouseCursorWidget()
            ),
 
-        // LAYER 3: UNIFIED CANVAS (The "Slide In" View)
-        // Only visible when actively receiving/released
-        if (service.isReceiving || service.lastReceivedFilePath != null)
+        // LAYER 3: UNIFIED CANVAS (Content)
+        if (showCanvas)
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
               child: Stack(
                 children: [
-                  // A. Background
+                  // A. BLACK BACKGROUND
                   Container(color: Colors.black),
 
-                  // B. Content
+                  // B. CONTENT
                   Center(child: _buildContent(service)),
 
-                  // C. Close Button
+                  // C. CLOSE BUTTON
                   Positioned(
                     top: 50, right: 20,
                     child: FloatingActionButton.small(
@@ -148,15 +157,15 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                       child: const Icon(Icons.close, color: Colors.white),
                     ),
                   ),
-                  
-                  // D. Status
+
+                  // D. STATUS
                   if (service.transferStatus == "INCOMING..." || service.transferStatus == "RECEIVING...")
                      Positioned(
                        bottom: 100, 
                        child: Container(
                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), 
                          color: Colors.black54, 
-                         child: const Text("Syncing High-Res...", style: TextStyle(color: Colors.white))
+                         child: const Text("Syncing...", style: TextStyle(color: Colors.white))
                        )
                      )
                 ],
@@ -172,23 +181,16 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     if (service.incomingContentType == 'video' && _isVideoReady && _controller != null) {
        return AspectRatio(aspectRatio: _controller!.value.aspectRatio, child: VideoPlayer(_controller!));
     }
-    // 2. FILE
+    // 2. FILE (High Res)
     if (service.lastReceivedFilePath != null && service.incomingContentType != 'video') {
        return Image.file(File(service.lastReceivedFilePath!), key: ValueKey(service.lastReceivedFilePath), fit: BoxFit.contain);
     }
-    // 3. HOLOGRAM
+    // 3. HOLOGRAM (RAM Preview)
     if (service.incomingThumbnail != null) {
        return Image.memory(service.incomingThumbnail!, fit: BoxFit.contain, gaplessPlayback: true);
     }
-    // 4. LOADING (Hologram Fallback)
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-         const CircularProgressIndicator(color: Color(0xFF00E676)),
-         const SizedBox(height: 20),
-         const Text("Receiving Hologram...", style: TextStyle(color: Colors.white54))
-      ],
-    );
+    // 4. LOADING
+    return const CircularProgressIndicator(color: Color(0xFF00E676));
   }
 
   // --- HELPERS ---
