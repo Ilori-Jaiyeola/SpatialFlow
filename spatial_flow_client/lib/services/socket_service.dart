@@ -15,28 +15,29 @@ class SocketService with ChangeNotifier {
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // --- STATE VARIABLES ---
+  // STATE
   bool _isConnected = false;
   bool _isScanning = false;
   bool _isConferenceMode = false;
   Timer? _heartbeatTimer; 
 
-  // --- MULTI-FILE STAGING ---
+  // MULTI-FILE STAGING
   List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
-  // --- INCOMING DATA ---
+  // INCOMING DATA
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
+  Uint8List? _lastReceivedBytes; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
   String? _incomingSenderId; 
 
-  // --- UNIFIED CANVAS (Mouse) ---
+  // MOUSE
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // --- GETTERS ---
+  // GETTERS
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
   bool get isConferenceMode => _isConferenceMode;
@@ -44,20 +45,18 @@ class SocketService with ChangeNotifier {
   String? get myId => _myId;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
   String? get lastReceivedFilePath => _lastReceivedFilePath; 
+  Uint8List? get lastReceivedBytes => _lastReceivedBytes; 
   String? get incomingContentType => _incomingContentType;
   String? get incomingSenderId => _incomingSenderId;
   String get transferStatus => _transferStatus;
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
 
-  // =========================================================
-  // 1. DISCOVERY & CONNECTION
-  // =========================================================
+  // --- DISCOVERY ---
   void startDiscovery() async {
     if (_isConnected) return;
     _isScanning = true;
     notifyListeners();
-
     try {
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
         socket.broadcastEnabled = true;
@@ -104,7 +103,6 @@ class SocketService with ChangeNotifier {
       DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
       String deviceName = "Unknown Node";
       String type = Platform.isAndroid || Platform.isIOS ? "mobile" : "desktop";
-      
       if (Platform.isAndroid) {
         AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
         deviceName = androidInfo.model;
@@ -112,9 +110,8 @@ class SocketService with ChangeNotifier {
         WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
         deviceName = winInfo.computerName;
       }
-      
-      // SANITIZATION FIX (Remove Mojibake)
-      // If name contains weird chars, fallback to simple name
+
+      // Name Sanitization
       if (deviceName.contains(RegExp(r'[^\x00-\x7F]'))) {
          deviceName = type == 'mobile' ? "Android Device" : "PC Node";
       }
@@ -134,10 +131,8 @@ class SocketService with ChangeNotifier {
         }
     });
 
-    // --- SENDING (Server Trigger Fallback) ---
     _socket!.on('transfer_request', (data) {
-       String targetId = data['targetId'];
-       _executeFileTransfer(targetId);
+       _executeFileTransfer(data['targetId']);
     });
 
     // --- RECEIVING ---
@@ -147,32 +142,40 @@ class SocketService with ChangeNotifier {
 
        try {
          String base64Data = data['fileData'];
-         String originalName = data['fileName']; // e.g. "photo.jpg"
+         String originalName = data['fileName'];
          String type = data['fileType'];
          String senderId = data['senderId'] ?? "";
          
          Uint8List bytes = base64Decode(base64Data);
          
-         // 1. GENERATE UNIQUE FILENAME (The Fix)
-         // We add a timestamp so Flutter thinks it's a brand new file every time.
+         // 1. GENERATE PATH & TIMESTAMP
          String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
          String extension = originalName.split('.').last;
          String nameWithoutExt = originalName.split('.').first;
          String uniqueFileName = "${nameWithoutExt}_$timestamp.$extension";
-
-         // 2. SAVE TO TEMP (For Immediate Display)
+         
          final tempDir = await getTemporaryDirectory();
-         final tempFile = File('${tempDir.path}/$uniqueFileName');
-         await tempFile.writeAsBytes(bytes, flush: true); // flush: true ensures write is done
+         final tempFilePath = '${tempDir.path}/$uniqueFileName';
 
-         // 3. SAVE TO GALLERY (Background)
+         // 2. INSTANT UI UPDATE (CRITICAL FIX)
+         // We set the bytes and a 'pending' path immediately so the UI renders the RAM image.
+         _lastReceivedBytes = bytes; 
+         _lastReceivedFilePath = tempFilePath; // Set this NOW so Renderer sees it
+         _incomingContentType = type;
+         _incomingSenderId = senderId; 
+         _transferStatus = "RENDERING...";
+         notifyListeners(); // <--- TRIGGERS UI ANIMATION INSTANTLY
+
+         // 3. SAVE TO DISK (BACKGROUND)
+         final tempFile = File(tempFilePath);
+         await tempFile.writeAsBytes(bytes, flush: true);
+
          if (Platform.isAndroid || Platform.isIOS) {
              try {
                 await Gal.putImage(tempFile.path); 
                 if (type == 'video') await Gal.putVideo(tempFile.path);
              } catch (e) { print("Gallery Error: $e"); }
          } else {
-             // Windows
              final downloadsDir = await getApplicationDocumentsDirectory(); 
              final saveDir = Directory('${downloadsDir.path}/SpatialFlow');
              if (!await saveDir.exists()) await saveDir.create(recursive: true);
@@ -180,11 +183,8 @@ class SocketService with ChangeNotifier {
              await permFile.writeAsBytes(bytes);
          }
 
-         // 4. UPDATE UI
-         _lastReceivedFilePath = tempFile.path;
-         _incomingContentType = type;
-         _incomingSenderId = senderId; 
-         _transferStatus = "RECEIVED";
+         // 4. CONFIRM COMPLETE
+         _transferStatus = "SAVED";
          notifyListeners();
 
        } catch (e) {
@@ -207,51 +207,36 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  // =========================================================
-  // 2. ACTIONS & METHODS
-  // =========================================================
+  // --- ACTIONS ---
 
-  // NEW: TRIGGER TRANSFER DIRECTLY FROM CLIENT SWIPE
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
-
-    int directionX = vx > 0 ? 1 : -1;
-    
     var me = _activeDevices.firstWhere((d) => d['id'] == _myId, orElse: () => null);
     if (me == null) return;
-    
     int myX = me['x'] ?? 0;
-    
     var target = _activeDevices.firstWhere((d) {
       if (d['id'] == _myId) return false;
       int targetX = d['x'] ?? 0;
-      if (vx > 0 && targetX > myX) return true; // Swipe Right -> Target on Right
-      if (vx < 0 && targetX < myX) return true; // Swipe Left -> Target on Left
+      if (vx > 0 && targetX > myX) return true; 
+      if (vx < 0 && targetX < myX) return true; 
       return false;
     }, orElse: () => null);
 
     if (target != null) {
-      print("Client Trigger: Sending to ${target['name']}");
       _executeFileTransfer(target['id']); 
     }
   }
 
-  // HELPER: EXECUTES THE TRANSFER LOOP
   Future<void> _executeFileTransfer(String targetId) async {
      _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
      notifyListeners();
-
      try {
        for (var file in _stagedFiles) {
          List<int> bytes = await file.readAsBytes();
          String base64Data = base64Encode(bytes);
-         
          _socket!.emit('file_payload', {
-           'targetId': targetId,
-           'senderId': _myId,
-           'fileData': base64Data,
-           'fileName': file.path.split('/').last,
-           'fileType': _stagedFileType
+           'targetId': targetId, 'senderId': _myId, 'fileData': base64Data,
+           'fileName': file.path.split('/').last, 'fileType': _stagedFileType
          });
          await Future.delayed(const Duration(milliseconds: 200)); 
        }
@@ -267,7 +252,6 @@ class SocketService with ChangeNotifier {
      }
   }
 
-  // NEW: CLEAR SENDER SELECTION
   void clearStagedFiles() {
     _stagedFiles = [];
     _stagedFileType = 'file';
@@ -275,10 +259,10 @@ class SocketService with ChangeNotifier {
     notifyListeners();
   }
 
-  // NEW: CLEAR RECEIVER VIEW
   void clearView() {
     _lastReceivedFilePath = null;
     _incomingContentType = null;
+    _lastReceivedBytes = null;
     notifyListeners();
   }
 
@@ -324,5 +308,3 @@ class SocketService with ChangeNotifier {
     });
   }
 }
-
-
