@@ -16,36 +16,35 @@ class SocketService with ChangeNotifier {
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // --- CONNECTION ---
   bool _isConnected = false;
   bool _isScanning = false;
   Timer? _heartbeatTimer; 
 
-  // --- UI STATE ---
+  // STATE
   bool _isReceiving = false; 
-  bool _isConferenceMode = false; // <--- RESTORED
+  bool _isConferenceMode = false;
   Uint8List? _incomingThumbnail; 
   String? _incomingPlaceholderType; 
 
-  // --- FILE DATA ---
+  // FILE DATA
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
   String? _incomingSenderId; 
 
-  // --- MOUSE ---
+  // MOUSE
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
 
-  // --- STAGING ---
+  // STAGING
   List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
-  // --- GETTERS ---
+  // GETTERS
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
-  bool get isConferenceMode => _isConferenceMode; // <--- RESTORED
+  bool get isConferenceMode => _isConferenceMode;
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   bool get isReceiving => _isReceiving;
@@ -57,6 +56,17 @@ class SocketService with ChangeNotifier {
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
+
+  // --- TELEMETRY LOGGER (NEW) ---
+  void log(String message) {
+    // 1. Print locally
+    print("[LOCAL] $message");
+    
+    // 2. Send to Server (and then to PC)
+    if (_socket != null && _socket!.connected) {
+      _socket!.emit('remote_log', {'message': message});
+    }
+  }
 
   // --- NETWORK LOGIC ---
   void startDiscovery() async {
@@ -82,18 +92,20 @@ class SocketService with ChangeNotifier {
           }
         });
       });
-    } catch (e) { print("UDP Error: $e"); }
+    } catch (e) { log("UDP Error: $e"); }
   }
 
   void connectToSpecificIP(String ip) async {
     if (_isConnected) return; 
+    log("Connecting to $ip...");
+    
     _socket = IO.io("http://$ip:3000", <String, dynamic>{
       'transports': ['websocket'], 'autoConnect': true, 'maxHttpBufferSize': 1e8 
     });
     if (!_socket!.connected) _socket!.connect();
 
     _socket!.onConnect((_) async {
-      print('Connected to Neural Core');
+      log("Connected to Neural Core");
       _isConnected = true;
       _isScanning = false;
       _startHeartbeat(); 
@@ -102,17 +114,25 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('register_confirm', (data) => _myId = data['id']);
     _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
-    _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
+    _socket!.on('disconnect', (_) { 
+       log("Disconnected from Core");
+       _isConnected = false; 
+       notifyListeners(); 
+    });
+
+    // --- DEBUG RELAY RECEIVER ---
+    _socket!.on('debug_broadcast', (data) {
+       // This prints logs from the OTHER device into THIS terminal
+       print("\x1b[33m[${data['sender']}] ${data['message']}\x1b[0m");
+    });
 
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
-            
-            // IF RELEASED: Trigger Receiving
             if (data['action'] == 'release') {
+                log("Swipe Release Detected. Velocity: ${data['vx']}");
                 _isReceiving = true;
                 _transferStatus = "INCOMING...";
-                // Clear drag data so Ghost Hand disappears and Canvas takes over
                 _incomingSwipeData!['isDragging'] = false; 
                 notifyListeners();
             } else {
@@ -125,6 +145,7 @@ class SocketService with ChangeNotifier {
 
     // 1. RECEIVE HOLOGRAM
     _socket!.on('preview_header', (data) {
+       log("Received Hologram Header. Size: ${data['thumbnail'].length} bytes");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
@@ -137,6 +158,7 @@ class SocketService with ChangeNotifier {
     // 2. RECEIVE FILE
     _socket!.on('content_transfer', (data) async {
        try {
+         log("Received Full Payload. Saving...");
          String base64Data = data['fileData'];
          String originalName = data['fileName'];
          String type = data['fileType'];
@@ -156,13 +178,14 @@ class SocketService with ChangeNotifier {
              File('${docDir.path}/SpatialFlow/$uniqueFileName').create(recursive: true).then((f) => f.writeAsBytes(bytes));
          }
 
+         log("File Saved Successfully: $uniqueFileName");
          _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
          _transferStatus = "RECEIVED";
          notifyListeners(); 
 
        } catch (e) {
-         print("Save Error: $e");
+         log("Save Error: $e");
          _transferStatus = "FAILED";
          notifyListeners();
        }
@@ -179,8 +202,14 @@ class SocketService with ChangeNotifier {
   // --- ACTIONS ---
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
+    log("Triggering Transfer. Velocity: $vx");
     var target = _findTarget(vx);
-    if (target != null) _executeFileTransfer(target['id']); 
+    if (target != null) {
+       log("Target Found: ${target['name']}");
+       _executeFileTransfer(target['id']); 
+    } else {
+       log("No Target Found for Direction");
+    }
   }
   
   dynamic _findTarget(double vx) {
@@ -201,18 +230,20 @@ class SocketService with ChangeNotifier {
        for (var file in _stagedFiles) {
          
          // GENERATE HOLOGRAM
+         log("Generating Hologram for ${file.path}");
          Uint8List? thumbBytes;
          if (_stagedFileType == 'video') {
             try {
               thumbBytes = await VideoThumbnail.thumbnailData(
                 video: file.path, imageFormat: ImageFormat.JPEG, maxWidth: 300, quality: 50,
               );
-            } catch(e) { print("Thumbnail Error: $e"); }
+            } catch(e) { log("Thumbnail Gen Error: $e"); }
          } else {
             thumbBytes = await file.readAsBytes(); 
          }
 
          if (thumbBytes != null) {
+            log("Sending Hologram Header...");
             _socket!.emit('preview_header', {
                'targetId': targetId, 'senderId': _myId,
                'thumbnail': base64Encode(thumbBytes),
@@ -221,7 +252,10 @@ class SocketService with ChangeNotifier {
          }
 
          // SEND FILE
+         log("Reading File Bytes...");
          List<int> bytes = await file.readAsBytes();
+         log("Sending Payload (${bytes.length} bytes)...");
+         
          _socket!.emit('file_payload', {
            'targetId': targetId, 'senderId': _myId, 'fileData': base64Encode(bytes),
            'fileName': file.path.split('/').last, 'fileType': _stagedFileType
@@ -233,6 +267,7 @@ class SocketService with ChangeNotifier {
        notifyListeners();
        Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
      } catch (e) {
+       log("Transfer Error: $e");
        _transferStatus = "ERROR";
        notifyListeners();
      }
@@ -262,11 +297,5 @@ class SocketService with ChangeNotifier {
   void syncClipboard(String t) { _socket!.emit('clipboard_sync', {'text': t}); }
   void sendMouseTeleport(String t, double x, double y) { _socket!.emit('mouse_teleport', {'targetId': t, 'dx': x, 'dy': y}); }
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
-  
-  // RESTORED METHOD
-  void toggleConferenceMode(bool value) { 
-    _isConferenceMode = value; 
-    notifyListeners(); 
-  }
+  void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); }
 }
-
