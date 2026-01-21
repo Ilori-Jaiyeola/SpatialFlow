@@ -111,7 +111,6 @@ class SocketService with ChangeNotifier {
         deviceName = winInfo.computerName;
       }
 
-      // Name Sanitization
       if (deviceName.contains(RegExp(r'[^\x00-\x7F]'))) {
          deviceName = type == 'mobile' ? "Android Device" : "PC Node";
       }
@@ -137,7 +136,11 @@ class SocketService with ChangeNotifier {
 
     // --- RECEIVING ---
     _socket!.on('content_transfer', (data) async {
+       // 1. STATE PURGE (The Fix)
+       // Clear everything immediately so UI knows we are busy
        _transferStatus = "RECEIVING...";
+       _lastReceivedBytes = null; // Wipe RAM
+       _lastReceivedFilePath = null; // Wipe Path
        notifyListeners();
 
        try {
@@ -146,9 +149,10 @@ class SocketService with ChangeNotifier {
          String type = data['fileType'];
          String senderId = data['senderId'] ?? "";
          
+         // 2. DECODE
          Uint8List bytes = base64Decode(base64Data);
          
-         // 1. GENERATE PATH & TIMESTAMP
+         // 3. GENERATE UNIQUE PATH
          String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
          String extension = originalName.split('.').last;
          String nameWithoutExt = originalName.split('.').first;
@@ -157,16 +161,15 @@ class SocketService with ChangeNotifier {
          final tempDir = await getTemporaryDirectory();
          final tempFilePath = '${tempDir.path}/$uniqueFileName';
 
-         // 2. INSTANT UI UPDATE (CRITICAL FIX)
-         // We set the bytes and a 'pending' path immediately so the UI renders the RAM image.
+         // 4. BUFFER READY - NOTIFY UI (RAM PREVIEW)
          _lastReceivedBytes = bytes; 
-         _lastReceivedFilePath = tempFilePath; // Set this NOW so Renderer sees it
+         _lastReceivedFilePath = tempFilePath; 
          _incomingContentType = type;
          _incomingSenderId = senderId; 
          _transferStatus = "RENDERING...";
-         notifyListeners(); // <--- TRIGGERS UI ANIMATION INSTANTLY
+         notifyListeners(); 
 
-         // 3. SAVE TO DISK (BACKGROUND)
+         // 5. DISK WRITE (BACKGROUND)
          final tempFile = File(tempFilePath);
          await tempFile.writeAsBytes(bytes, flush: true);
 
@@ -183,7 +186,6 @@ class SocketService with ChangeNotifier {
              await permFile.writeAsBytes(bytes);
          }
 
-         // 4. CONFIRM COMPLETE
          _transferStatus = "SAVED";
          notifyListeners();
 
