@@ -27,7 +27,11 @@ dependencies:
   wakelock_plus: ^1.1.0      # Keeps screen alive
   desktop_drop: ^0.4.4       # Drag from Windows Explorer
   flutter_background_service: ^5.0.0 # Keep Android Alive
+
+  # ... other deps ...
+  video_thumbnail: ^0.5.3  # <--- NEW: For Video Holograms
   
+
 
 
 
