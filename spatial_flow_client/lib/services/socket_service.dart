@@ -9,26 +9,27 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:gal/gal.dart';
-import 'package:video_thumbnail/video_thumbnail.dart'; // NEW IMPORT
+import 'package:video_thumbnail/video_thumbnail.dart'; 
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // --- CONNECTION STATE ---
+  // --- CONNECTION ---
   bool _isConnected = false;
   bool _isScanning = false;
   Timer? _heartbeatTimer; 
 
-  // --- UNIFIED CANVAS STATE ---
-  bool _isReceiving = false; // Triggers the slide animation
-  Uint8List? _incomingThumbnail; // <--- THE HOLOGRAM (RAM DATA)
-  String? _incomingPlaceholderType; // 'image' or 'video'
+  // --- UI STATE ---
+  bool _isReceiving = false; 
+  bool _isConferenceMode = false; // <--- RESTORED
+  Uint8List? _incomingThumbnail; 
+  String? _incomingPlaceholderType; 
 
   // --- FILE DATA ---
   Map<String, dynamic>? _incomingSwipeData;
-  String? _lastReceivedFilePath; // The real file on disk
+  String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
   String? _incomingSenderId; 
@@ -44,13 +45,12 @@ class SocketService with ChangeNotifier {
   // --- GETTERS ---
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
+  bool get isConferenceMode => _isConferenceMode; // <--- RESTORED
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
-  
   bool get isReceiving => _isReceiving;
-  Uint8List? get incomingThumbnail => _incomingThumbnail; // Getter for Renderer
+  Uint8List? get incomingThumbnail => _incomingThumbnail; 
   String? get incomingPlaceholderType => _incomingPlaceholderType;
-  
   String? get lastReceivedFilePath => _lastReceivedFilePath; 
   String? get incomingContentType => _incomingContentType;
   String get transferStatus => _transferStatus;
@@ -58,10 +58,7 @@ class SocketService with ChangeNotifier {
   bool get showVirtualCursor => _showVirtualCursor;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
 
-
-  // =========================================================
-  // 1. NETWORK LOGIC
-  // =========================================================
+  // --- NETWORK LOGIC ---
   void startDiscovery() async {
     if (_isConnected) return;
     _isScanning = true;
@@ -110,7 +107,6 @@ class SocketService with ChangeNotifier {
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
-            // PRE-TRIGGER: If user lets go, start "Receiving" mode even before data arrives
             if (data['action'] == 'release') {
                 _isReceiving = true;
                 _transferStatus = "INCOMING...";
@@ -123,21 +119,18 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('transfer_request', (data) => _executeFileTransfer(data['targetId']));
 
-    // --- A. RECEIVE HOLOGRAM (INSTANT RAM PREVIEW) ---
+    // 1. RECEIVE HOLOGRAM
     _socket!.on('preview_header', (data) {
-       print("Hologram Received!");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
        _incomingSenderId = data['senderId'];
-       
-       // Force UI to show this RAM image immediately
        _isReceiving = true; 
-       _lastReceivedFilePath = null; // Clear old file so we show hologram
+       _lastReceivedFilePath = null; 
        notifyListeners();
     });
 
-    // --- B. RECEIVE FULL FILE (BACKGROUND) ---
+    // 2. RECEIVE FILE
     _socket!.on('content_transfer', (data) async {
        try {
          String base64Data = data['fileData'];
@@ -150,11 +143,8 @@ class SocketService with ChangeNotifier {
          
          final tempDir = await getTemporaryDirectory();
          final tempFile = File('${tempDir.path}/$uniqueFileName');
-         
-         // WRITE TO DISK (This used to cause the grey screen, now it happens in background)
          await tempFile.writeAsBytes(bytes, flush: true);
 
-         // Save to Gallery
          if (Platform.isAndroid || Platform.isIOS) {
              Gal.putImage(tempFile.path).then((_) { if(type=='video') Gal.putVideo(tempFile.path); });
          } else {
@@ -162,11 +152,10 @@ class SocketService with ChangeNotifier {
              File('${docDir.path}/SpatialFlow/$uniqueFileName').create(recursive: true).then((f) => f.writeAsBytes(bytes));
          }
 
-         // SWAP HOLOGRAM FOR REAL FILE
          _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
          _transferStatus = "RECEIVED";
-         notifyListeners(); // Renderer will see this and switch from RAM -> File
+         notifyListeners(); 
 
        } catch (e) {
          print("Save Error: $e");
@@ -183,10 +172,7 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  // =========================================================
-  // 2. ACTIONS
-  // =========================================================
-
+  // --- ACTIONS ---
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
     var target = _findTarget(vx);
@@ -210,19 +196,15 @@ class SocketService with ChangeNotifier {
      try {
        for (var file in _stagedFiles) {
          
-         // 1. GENERATE & SEND HOLOGRAM (THUMBNAIL)
+         // GENERATE HOLOGRAM
          Uint8List? thumbBytes;
          if (_stagedFileType == 'video') {
-            // Generate small JPG from video
-            thumbBytes = await VideoThumbnail.thumbnailData(
-              video: file.path,
-              imageFormat: ImageFormat.JPEG,
-              maxWidth: 300, // Small size = Fast transfer
-              quality: 50,
-            );
+            try {
+              thumbBytes = await VideoThumbnail.thumbnailData(
+                video: file.path, imageFormat: ImageFormat.JPEG, maxWidth: 300, quality: 50,
+              );
+            } catch(e) { print("Thumbnail Error: $e"); }
          } else {
-            // If it's an image, send the image itself as the preview
-            // (Images are usually small enough to send instantly)
             thumbBytes = await file.readAsBytes(); 
          }
 
@@ -234,7 +216,7 @@ class SocketService with ChangeNotifier {
             });
          }
 
-         // 2. SEND FULL FILE PAYLOAD
+         // SEND FILE
          List<int> bytes = await file.readAsBytes();
          _socket!.emit('file_payload', {
            'targetId': targetId, 'senderId': _myId, 'fileData': base64Encode(bytes),
@@ -270,18 +252,16 @@ class SocketService with ChangeNotifier {
   }
 
   void clearStagedFiles() { _stagedFiles = []; _transferStatus = "IDLE"; notifyListeners(); }
-  
-  void clearView() { 
-      _isReceiving = false; 
-      _lastReceivedFilePath = null; 
-      _incomingThumbnail = null; 
-      notifyListeners(); 
-  }
-  
+  void clearView() { _isReceiving = false; _lastReceivedFilePath = null; _incomingThumbnail = null; notifyListeners(); }
   void broadcastContent(List<File> f, String t) { _stagedFiles = f; _stagedFileType = t; _transferStatus = "READY"; notifyListeners(); }
   void sendSwipeData(Map<String, dynamic> d) { d['senderId'] = _myId; _socket!.emit('swipe_event', d); }
   void syncClipboard(String t) { _socket!.emit('clipboard_sync', {'text': t}); }
   void sendMouseTeleport(String t, double x, double y) { _socket!.emit('mouse_teleport', {'targetId': t, 'dx': x, 'dy': y}); }
-  void toggleConferenceMode(bool v) { _isConferenceMode = v; notifyListeners(); }
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
+  
+  // RESTORED METHOD
+  void toggleConferenceMode(bool value) { 
+    _isConferenceMode = value; 
+    notifyListeners(); 
+  }
 }
