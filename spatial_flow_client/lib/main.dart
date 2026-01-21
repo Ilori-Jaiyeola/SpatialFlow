@@ -56,6 +56,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable(); 
+    // Start discovery immediately
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -65,7 +66,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.dispose();
   }
 
-  // --- LOGIC METHODS ---
+  // --- LOGIC: FILE PICKING & PROCESSING ---
 
   void _onFilesDropped(List<XFile> files) => _processFiles(files);
   
@@ -89,13 +90,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _selectedFiles = files.map((x) => File(x.path)).toList();
       _fileType = type;
-      _dragPosition = const Offset(50, 200);
+      _dragPosition = const Offset(50, 200); // Reset position to be visible
     });
 
     if (type == 'video') {
        _initVideoPlayer(_selectedFiles.first);
     }
     
+    // Broadcast "Ready" state to socket
     Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
@@ -109,7 +111,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (!mounted) return;
 
     setState(() {
-      _senderVideoController!.setVolume(0);
+      _senderVideoController!.setVolume(0); // Mute preview
       _senderVideoController!.play();
       _senderVideoController!.setLooping(true);
     });
@@ -124,9 +126,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Provider.of<SocketService>(context, listen: false).clearStagedFiles();
   }
   
+  // LOGIC: MANUAL SEND TRIGGER
   void _manualSend() {
      final service = Provider.of<SocketService>(context, listen: false);
-     service.triggerSwipeTransfer(500, 0); // Simulate Right Swipe
+     // Simulate a fast right swipe (500 velocity)
+     service.triggerSwipeTransfer(500, 0); 
   }
 
   @override
@@ -136,12 +140,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return DropTarget(
       onDragDone: (details) => _onFilesDropped(details.files),
       child: SpatialGestureLayer(
-        // NEW: SEND FILE TYPE IN THE SWIPE DATA
+        // CRITICAL: SEND FILE TYPE IN SWIPE DATA
+        // This tells the receiver's Ghost Hand whether to show a Video Icon or Image Icon
         extraData: {
-           'fileType': _fileType ?? 'image', // Tell receiver what is coming
-           'timestamp': _fileType == 'video' && _senderVideoController != null 
-               ? _senderVideoController!.value.position.inMilliseconds 
-               : 0
+           'fileType': _fileType ?? 'file',
+           'timestamp': DateTime.now().millisecondsSinceEpoch
         },
         onDragUpdate: (details) {
           setState(() => _dragPosition += details.delta);
@@ -165,12 +168,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                ),
             ],
           ),
-          floatingActionButton: _buildFab(), // <--- METHOD CALLED HERE
+          floatingActionButton: _buildFab(), // Shows the Pick buttons
           body: Stack(
             children: [
               _buildBackground(),
 
-              // DASHBOARD
+              // 1. DASHBOARD UI (Status & Device List)
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
@@ -196,7 +199,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // SENDER PREVIEW
+              // 2. SENDER PREVIEW (Draggable Container)
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
@@ -204,7 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildDraggableContent(context), 
                 ),
 
-              // RECEIVER RENDERER
+              // 3. RECEIVER RENDERER (The Unified Canvas)
               const SpatialRenderer(),
             ],
           ),
@@ -213,9 +216,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  // --- UI HELPERS ---
+  // --- UI WIDGETS ---
 
-  Widget _buildFab() { // <--- HERE IT IS, RESTORED
+  Widget _buildFab() {
     return Column(mainAxisAlignment: MainAxisAlignment.end, children: [
         FloatingActionButton.small(heroTag: "f1", onPressed: () => _pickMedia('image'), child: const Icon(Icons.image)),
         const SizedBox(height: 10),
@@ -223,11 +226,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]);
   }
 
+  // FIXED: Sender Aspect Ratio Logic for PC
   Widget _buildDraggableContent(BuildContext context) {
     return Container(
       constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.8,
-        maxHeight: MediaQuery.of(context).size.height * 0.6,
+        maxWidth: MediaQuery.of(context).size.width * 0.6, // Cap at 60% width
+        maxHeight: MediaQuery.of(context).size.height * 0.6, // Cap at 60% height
         minWidth: 150,
         minHeight: 150
       ),
@@ -265,7 +269,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
 
-          // 3. SEND BUTTON (Manual Trigger)
+          // 3. MANUAL SEND BUTTON
           Positioned(
             bottom: 10, right: 10,
             child: FloatingActionButton.small(
@@ -286,7 +290,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   
   Widget _buildGlassStatusCard(SocketService service) { 
     return GlassBox(
-      borderGlow: service.isConferenceMode,
+      borderGlow: service.isConferenceMode, // Works now that getter is restored
       child: Column(
         children: [
           Row(
@@ -326,7 +330,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- GESTURE LAYER ---
+// --- GESTURE LAYER (Triggers the Physics) ---
 
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
@@ -340,16 +344,27 @@ class SpatialGestureLayer extends StatefulWidget {
 class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
   Offset _startPos = Offset.zero;
   DateTime _startTime = DateTime.now();
+  
   @override
   Widget build(BuildContext context) {
     final socketService = Provider.of<SocketService>(context, listen: false);
     final size = MediaQuery.of(context).size;
+    
     return Listener(
       onPointerDown: (event) { _startPos = event.position; _startTime = DateTime.now(); },
       onPointerMove: (event) {
         if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
-        socketService.sendSwipeData({'x': event.position.dx / size.width, 'y': event.position.dy / size.height, 'isDragging': true, 'action': 'move'});
         
+        // Send Continuous Movement Data (For Ghost Hand)
+        socketService.sendSwipeData({
+            'x': event.position.dx / size.width, 
+            'y': event.position.dy / size.height, 
+            'isDragging': true, 
+            'action': 'move',
+            ...widget.extraData // Sends 'fileType' so Ghost Hand knows what icon to show
+        });
+        
+        // Windows Mouse Teleport Logic
         if (Platform.isWindows) {
            if (event.position.dx < 5) {
               var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
@@ -370,11 +385,12 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         double vx = (dx / duration) * 1000;
         double vy = (dy / duration) * 1000;
 
+        // Send Release Event
         socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
 
-        // TRIGGER LOGIC
-        bool isFast = vx.abs() > 100 || vy.abs() > 100;
-        bool isFar = dx.abs() > (size.width * 0.2); 
+        // CLIENT-SIDE TRIGGER LOGIC
+        bool isFast = vx.abs() > 100 || vy.abs() > 100; // Velocity Check
+        bool isFar = dx.abs() > (size.width * 0.2); // Distance Check (20% of screen)
 
         if (isFast || isFar) {
             socketService.triggerSwipeTransfer(vx, vy);
@@ -384,4 +400,3 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     );
   }
 }
-
