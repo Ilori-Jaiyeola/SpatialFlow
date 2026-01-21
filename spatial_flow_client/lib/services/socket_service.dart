@@ -19,23 +19,26 @@ class SocketService with ChangeNotifier {
   bool _isConnected = false;
   bool _isScanning = false;
   bool _isConferenceMode = false;
-  Timer? _heartbeatTimer; 
-
-  // MULTI-FILE STAGING
-  List<File> _stagedFiles = []; 
-  String _stagedFileType = 'file';
-
-  // INCOMING DATA
+  
+  // UNIFIED CANVAS STATE
+  bool _isReceiving = false; // <--- THE ANIMATION TRIGGER
+  String? _incomingSenderId; // Who is sending it?
+  String? _incomingPlaceholderType; // Image or Video?
+  
+  // INCOMING FILE DATA
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
-  Uint8List? _lastReceivedBytes; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
-  String? _incomingSenderId; 
 
   // MOUSE
   Offset _virtualMousePos = const Offset(200, 400);
   bool _showVirtualCursor = false;
+  Timer? _heartbeatTimer; 
+
+  // STAGING
+  List<File> _stagedFiles = []; 
+  String _stagedFileType = 'file';
 
   // GETTERS
   bool get isConnected => _isConnected;
@@ -44,8 +47,11 @@ class SocketService with ChangeNotifier {
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
+  
+  bool get isReceiving => _isReceiving; // <--- NEW GETTER
+  String? get incomingPlaceholderType => _incomingPlaceholderType;
+  
   String? get lastReceivedFilePath => _lastReceivedFilePath; 
-  Uint8List? get lastReceivedBytes => _lastReceivedBytes; 
   String? get incomingContentType => _incomingContentType;
   String? get incomingSenderId => _incomingSenderId;
   String get transferStatus => _transferStatus;
@@ -110,11 +116,9 @@ class SocketService with ChangeNotifier {
         WindowsDeviceInfo winInfo = await deviceInfo.windowsInfo;
         deviceName = winInfo.computerName;
       }
-
       if (deviceName.contains(RegExp(r'[^\x00-\x7F]'))) {
          deviceName = type == 'mobile' ? "Android Device" : "PC Node";
       }
-
       _socket!.emit('register', {'name': deviceName, 'type': type});
       notifyListeners();
     });
@@ -123,9 +127,18 @@ class SocketService with ChangeNotifier {
     _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
     _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
 
+    // --- 1. SWIPE EVENT (THE ANIMATION TRIGGER) ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             _incomingSwipeData = data;
+            
+            // NEW: DETECT "RELEASE" = INCOMING FILE
+            if (data['action'] == 'release') {
+                _isReceiving = true; // START ANIMATION NOW
+                _incomingSenderId = data['senderId'];
+                _incomingPlaceholderType = data['fileType'] ?? 'file';
+                _transferStatus = "INCOMING...";
+            }
             notifyListeners();
         }
     });
@@ -134,25 +147,16 @@ class SocketService with ChangeNotifier {
        _executeFileTransfer(data['targetId']);
     });
 
-    // --- RECEIVING ---
+    // --- 2. CONTENT TRANSFER (THE PAYLOAD) ---
     _socket!.on('content_transfer', (data) async {
-       // 1. STATE PURGE (The Fix)
-       // Clear everything immediately so UI knows we are busy
-       _transferStatus = "RECEIVING...";
-       _lastReceivedBytes = null; // Wipe RAM
-       _lastReceivedFilePath = null; // Wipe Path
-       notifyListeners();
-
+       // Note: We don't set status here, animation is already running!
        try {
          String base64Data = data['fileData'];
          String originalName = data['fileName'];
          String type = data['fileType'];
          String senderId = data['senderId'] ?? "";
          
-         // 2. DECODE
          Uint8List bytes = base64Decode(base64Data);
-         
-         // 3. GENERATE UNIQUE PATH
          String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
          String extension = originalName.split('.').last;
          String nameWithoutExt = originalName.split('.').first;
@@ -160,17 +164,8 @@ class SocketService with ChangeNotifier {
          
          final tempDir = await getTemporaryDirectory();
          final tempFilePath = '${tempDir.path}/$uniqueFileName';
-
-         // 4. BUFFER READY - NOTIFY UI (RAM PREVIEW)
-         _lastReceivedBytes = bytes; 
-         _lastReceivedFilePath = tempFilePath; 
-         _incomingContentType = type;
-         _incomingSenderId = senderId; 
-         _transferStatus = "RENDERING...";
-         notifyListeners(); 
-
-         // 5. DISK WRITE (BACKGROUND)
          final tempFile = File(tempFilePath);
+
          await tempFile.writeAsBytes(bytes, flush: true);
 
          if (Platform.isAndroid || Platform.isIOS) {
@@ -182,11 +177,15 @@ class SocketService with ChangeNotifier {
              final downloadsDir = await getApplicationDocumentsDirectory(); 
              final saveDir = Directory('${downloadsDir.path}/SpatialFlow');
              if (!await saveDir.exists()) await saveDir.create(recursive: true);
-             final permFile = File('${saveDir.path}/$uniqueFileName');
-             await permFile.writeAsBytes(bytes);
+             File('${saveDir.path}/$uniqueFileName').writeAsBytes(bytes);
          }
 
-         _transferStatus = "SAVED";
+         // 3. FILE READY -> FILL CONTAINER
+         _lastReceivedFilePath = tempFile.path;
+         _incomingContentType = type;
+         _incomingSenderId = senderId; 
+         _transferStatus = "RECEIVED";
+         // _isReceiving stays TRUE so the view stays open
          notifyListeners();
 
        } catch (e) {
@@ -230,7 +229,7 @@ class SocketService with ChangeNotifier {
   }
 
   Future<void> _executeFileTransfer(String targetId) async {
-     _transferStatus = "SENDING ${_stagedFiles.length} FILES...";
+     _transferStatus = "SENDING...";
      notifyListeners();
      try {
        for (var file in _stagedFiles) {
@@ -264,7 +263,7 @@ class SocketService with ChangeNotifier {
   void clearView() {
     _lastReceivedFilePath = null;
     _incomingContentType = null;
-    _lastReceivedBytes = null;
+    _isReceiving = false; // CLOSE VIEW
     notifyListeners();
   }
 
