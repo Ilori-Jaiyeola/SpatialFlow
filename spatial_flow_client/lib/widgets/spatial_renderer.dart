@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import '../services/socket_service.dart';
 import 'dart:io';
+import 'dart:typed_data';
 
 class SpatialRenderer extends StatefulWidget {
   const SpatialRenderer({Key? key}) : super(key: key);
@@ -19,7 +20,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   
   String? _currentFilePath;
   bool _isVideoInitialized = false;
-  bool _isFileReady = false; // New Flag
 
   @override
   void initState() {
@@ -44,49 +44,26 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // DETECT NEW FILE
-    if (service.lastReceivedFilePath != null && service.lastReceivedFilePath != _currentFilePath) {
+    // TRIGGER ON RAM BYTES OR FILE PATH CHANGE
+    // This condition ensures animation runs even if file isn't written yet
+    bool hasNewBytes = service.lastReceivedBytes != null && service.lastReceivedFilePath != _currentFilePath;
+    
+    if (hasNewBytes) {
        _currentFilePath = service.lastReceivedFilePath; 
-       _isFileReady = false; // Reset readiness
+       
+       // Trigger Animation Immediately
+       _calculateEntryDirection(service);
+       _entryController!.forward(from: 0);
 
-       // 1. Cache Busting
-       if (service.incomingContentType != 'video') {
-         FileImage(File(_currentFilePath!)).evict();
+       // Handle Video Initialization (Still needs file)
+       if (service.incomingContentType == 'video' && service.lastReceivedFilePath != null) {
+         _initializeVideo(File(service.lastReceivedFilePath!));
        }
-
-       // 2. Start Integrity Check
-       _waitForFileIntegrity(File(_currentFilePath!), service);
     }
-  }
-
-  // --- NEW: WAIT FOR FILE TO BE FULLY WRITTEN ---
-  Future<void> _waitForFileIntegrity(File file, SocketService service) async {
-    int retries = 0;
-    while (retries < 5) {
-       if (await file.exists() && await file.length() > 0) {
-          // File is good!
-          if (!mounted) return;
-          setState(() {
-             _isFileReady = true; // Unlock the view
-          });
-
-          _calculateEntryDirection(service);
-          _entryController!.forward(from: 0);
-
-          if (service.incomingContentType == 'video') {
-            _initializeVideo(file);
-          }
-          return;
-       }
-       await Future.delayed(const Duration(milliseconds: 300)); // Wait 300ms
-       retries++;
-    }
-    print("File Integrity Failed: File never became valid.");
   }
 
   Future<void> _initializeVideo(File file) async {
     setState(() => _isVideoInitialized = false);
-    
     final oldController = _controller;
     if (oldController != null) await oldController.dispose();
 
@@ -130,6 +107,10 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     final swipeData = socketService.incomingSwipeData;
     final contentPath = socketService.lastReceivedFilePath;
     final contentType = socketService.incomingContentType;
+    final ramBytes = socketService.lastReceivedBytes;
+
+    // Condition: Show if we have RAM bytes OR a file path
+    bool showContent = ramBytes != null || contentPath != null;
 
     return Stack(
       children: [
@@ -155,7 +136,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
           ),
 
         // 3. FULL SCREEN VIEWER
-        if (contentPath != null && _isFileReady) // Only show if Integrity Check Passed
+        if (showContent)
           SlideTransition(
             position: _slideAnimation!,
             child: Positioned.fill(
@@ -171,19 +152,19 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                                 child: VideoPlayer(_controller!)
                               )
                             : const CircularProgressIndicator(color: Color(0xFF00E676))) 
-                        : InteractiveViewer(
-                            minScale: 1.0, maxScale: 4.0,
-                            child: Image.file(
-                              File(contentPath), 
-                              key: UniqueKey(), 
-                              fit: BoxFit.contain, 
-                              gaplessPlayback: true,
-                              errorBuilder: (context, error, stackTrace) => const Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [Icon(Icons.broken_image, color: Colors.red, size: 50), Text("Corrupt File", style: TextStyle(color: Colors.white))],
-                              ),
-                            )
-                          ),
+                        // --- RAM PREVIEW RENDERER ---
+                        : (ramBytes != null 
+                             ? InteractiveViewer(
+                                 minScale: 1.0, maxScale: 4.0,
+                                 child: Image.memory(
+                                    ramBytes, // RAM Data
+                                    key: UniqueKey(), // Force Refresh
+                                    fit: BoxFit.contain, 
+                                    gaplessPlayback: true,
+                                    errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.red, size: 50),
+                                 )
+                               )
+                             : const CircularProgressIndicator(color: Color(0xFF00E676)))
                   ),
                   
                   // CLOSE BUTTON
@@ -223,7 +204,7 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     );
   }
 
-  // --- HELPERS (No Changes) ---
+  // --- HELPERS (Unchanged) ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
