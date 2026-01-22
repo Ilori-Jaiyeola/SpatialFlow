@@ -70,10 +70,14 @@ class SocketService with ChangeNotifier {
 
   // --- NETWORK LOGIC ---
   void startDiscovery() async {
-    if (_isConnected) return;
+    // Don't stop even if already scanning, just restart logic to be safe
     _isScanning = true;
     notifyListeners();
+    
+    log("Starting UDP Beacon Discovery...");
+
     try {
+      // Bind to Any IPv4 address on Port 8888
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
         socket.broadcastEnabled = true;
         socket.listen((RawSocketEvent event) {
@@ -81,11 +85,19 @@ class SocketService with ChangeNotifier {
             Datagram? dg = socket.receive();
             if (dg != null) {
               String message = utf8.decode(dg.data);
+              
+              // THE LOGIC: If we hear the beacon, connect immediately.
               if (message.startsWith("SPATIAL_ANNOUNCE")) {
                 var parts = message.split("|");
                 if (parts.length > 1) {
-                  connectToSpecificIP(parts[1]);
-                  socket.close();
+                  String serverIp = parts[1];
+                  
+                  // Avoid reconnecting to same IP
+                  if (_socket == null || !_socket!.connected || !_socket!.io.uri.contains(serverIp)) {
+                     log("Beacon Found! Connecting to $serverIp");
+                     connectToSpecificIP(serverIp);
+                     socket.close(); // Stop listening once found
+                  }
                 }
               }
             }
@@ -299,3 +311,4 @@ class SocketService with ChangeNotifier {
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
   void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); }
 }
+
