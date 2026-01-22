@@ -24,10 +24,10 @@ class SocketService with ChangeNotifier {
   bool _isScanning = false;
   bool _isReceiving = false; 
   
-  // DATA STATES
+  // STATE
   Uint8List? _incomingThumbnail; 
   String? _incomingPlaceholderType; 
-  Map<String, dynamic>? _incomingSwipeData; // <--- The culprit. We must clear this often.
+  Map<String, dynamic>? _incomingSwipeData; // <--- The culprit
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
@@ -135,28 +135,29 @@ class SocketService with ChangeNotifier {
     _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
     _socket!.on('debug_broadcast', (data) => print("\x1b[33m[${data['sender']}] ${data['message']}\x1b[0m"));
 
-    // --- LOGIC FIX: SWIPE EVENT CLEANUP ---
+    // --- LOGIC FIX: INSTANT KILL ON RELEASE ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
             
-            // 1. If it's a RELEASE event, we clear the UI immediately.
+            // 1. If released, DESTROY the data immediately.
             if (data['action'] == 'release') {
-                _incomingSwipeData = null; // DELETE DATA
+                _incomingSwipeData = null; // This removes the Grey Screen instantly
                 notifyListeners(); 
                 return;
             }
 
-            // 2. Otherwise, update the Ghost Hand position
+            // 2. Otherwise, update the Ghost Hand
             _incomingSwipeData = data;
-            _incomingSwipeData!['isDragging'] = true; // Force True for safety
+            _incomingSwipeData!['isDragging'] = true; 
             notifyListeners();
         }
     });
 
     _socket!.on('transfer_request', (data) => _executeFileTransfer(data['targetId']));
 
+    // --- HOLOGRAM: OPEN THE PORTAL ---
     _socket!.on('preview_header', (data) {
-       log("Hologram Arrived. Opening Canvas.");
+       log("Portal Opening: Hologram Received.");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
@@ -164,7 +165,7 @@ class SocketService with ChangeNotifier {
        _isReceiving = true; 
        _lastReceivedFilePath = null; 
        
-       // CRITICAL: Ensure Ghost Hand is gone when Real File arrives
+       // Ensure Ghost Hand is gone so it doesn't overlap the portal
        _incomingSwipeData = null; 
        
        notifyListeners();
@@ -255,15 +256,14 @@ class SocketService with ChangeNotifier {
 
   void _startHeartbeat() { _heartbeatTimer?.cancel(); _heartbeatTimer = Timer.periodic(const Duration(seconds: 1), (_) { if (_socket != null && _socket!.connected) _socket!.emit('heartbeat'); }); }
   
-  // CLEANUP ACTIONS
   void clearStagedFiles() { _stagedFiles = []; _transferStatus = "IDLE"; notifyListeners(); }
   
-  // This explicitly clears the "Black Screen" (Unified Canvas)
+  // CLEAR EVERYTHING
   void clearView() { 
       _isReceiving = false; 
       _lastReceivedFilePath = null; 
       _incomingThumbnail = null; 
-      _incomingSwipeData = null; // SAFETY CLEAR
+      _incomingSwipeData = null; // Safety wipe
       notifyListeners(); 
   }
   
