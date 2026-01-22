@@ -5,92 +5,103 @@ const dgram = require('dgram');
 const os = require('os');
 
 // ==========================================
-// CONFIG: MANUAL IP (Leave empty for Auto)
+// CONFIG: MANUAL IP (Leave empty "" for Auto)
 const MANUAL_IP = ""; 
 // ==========================================
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    maxHttpBufferSize: 1e8, 
+    maxHttpBufferSize: 1e8, // 100MB Limit (Required for Video)
     cors: { origin: "*" }
 });
 
 let activeDevices = [];
 
-// --- PRETTY LOGGING ---
+// --- LOGGING SYSTEM ---
 function log(tag, message, data = "") {
     const time = new Date().toISOString().split('T')[1].split('.')[0];
-    const color = { 'INFO': '\x1b[36m', 'SWIPE': '\x1b[35m', 'FILE': '\x1b[33m', 'ERROR': '\x1b[31m', 'RESET': '\x1b[0m' };
+    const color = { 
+        'INFO': '\x1b[36m', 'SWIPE': '\x1b[35m', 'FILE': '\x1b[33m', 
+        'MOUSE': '\x1b[32m', 'CLIP': '\x1b[34m', 'ERROR': '\x1b[31m', 'RESET': '\x1b[0m' 
+    };
     console.log(`${color['RESET']}[${time}] ${color[tag] || ''}[${tag}] ${message} ${data ? JSON.stringify(data) : ''}${color['RESET']}`);
 }
 
-// --- ROBUST IP FINDER (The Logic Restoration) ---
+// --- SMART IP FINDER (Fixes Autoconnect) ---
 function getLocalIP() {
     if (MANUAL_IP.length > 0) return MANUAL_IP;
 
     const interfaces = os.networkInterfaces();
-    let bestCandidate = null;
+    let candidates = [];
 
     console.log("--- NETWORK SCAN ---");
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
-            // Must be IPv4 and NOT localhost
             if (iface.family === 'IPv4' && !iface.internal) {
                 const ip = iface.address;
-                console.log(`Checking: ${name} -> ${ip}`);
-
-                // 1. STRICTLY BLOCK VIRTUAL ADAPTERS
-                if (ip.startsWith('192.168.56.')) continue; // VirtualBox
-                if (ip.startsWith('192.168.137.')) continue; // Default Windows Hotspot (often creates issues)
+                // BLOCK Virtual Adapters (The cause of connection issues)
+                if (ip.startsWith('192.168.56.') || ip.startsWith('192.168.137.')) continue;
                 
-                // 2. PRIORITIZE STANDARD WI-FI SUBNETS
-                // We accept ANY 192.168.x.x that isn't the blocked ones above.
-                if (ip.startsWith('192.168.')) {
-                    // This is likely Home Wi-Fi
-                    return ip; // RETURN IMMEDIATELY (Fastest Match)
+                // PRIORITIZE Home/Office Wi-Fi
+                if (ip.startsWith('192.168.0.') || ip.startsWith('192.168.1.') || ip.startsWith('172.') || ip.startsWith('10.')) {
+                    candidates.unshift(ip);
+                } else {
+                    candidates.push(ip);
                 }
-                
-                // 3. BACKUP (e.g. 172.x or 10.x enterprise networks)
-                if (!bestCandidate) bestCandidate = ip;
             }
         }
     }
-    return bestCandidate || '127.0.0.1';
+    const chosen = candidates.length > 0 ? candidates[0] : '127.0.0.1';
+    console.log(`>>> AUTO-SELECTED IP: ${chosen}`);
+    return chosen;
 }
 
-// --- UDP BEACON (The "Lighthouse") ---
+// --- 1. OMNI-BROADCASTING (Conference Mode Beacon) ---
+// This broadcasts to the ENTIRE network. Any device with the app open will hear this and connect.
 const udpSocket = dgram.createSocket('udp4');
 udpSocket.bind(8888, () => {
     udpSocket.setBroadcast(true);
-    log('INFO', 'UDP Beacon Active (Broadcasting every 1s)');
+    log('INFO', 'UDP Discovery Beacon Active');
 });
 
 const MY_IP = getLocalIP();
 
 setInterval(() => {
-    // THIS is the packet the phone looks for
     const message = Buffer.from(`SPATIAL_ANNOUNCE|${MY_IP}`);
     udpSocket.send(message, 0, message.length, 8888, '255.255.255.255');
 }, 1000);
 
-// --- SOCKET LOGIC ---
+// --- 2. THE NEURAL CORE (Socket Logic) ---
 io.on('connection', (socket) => {
     const clientIp = socket.handshake.address;
-    log('INFO', `Device Connected: ${socket.id}`);
+    log('INFO', `New Connection: ${socket.id}`);
 
-    // A. REGISTRATION
+    // A. REGISTRATION & TOPOLOGY (Conference Mode Logic)
     socket.on('register', (device) => {
         device.id = socket.id;
         device.ip = clientIp;
-        device.x = activeDevices.length === 0 ? -1 : 1; 
+        
+        // DYNAMIC POSITIONING: 
+        // 1st Device = 0 (Center)
+        // 2nd Device = 1 (Right)
+        // 3rd Device = -1 (Left)
+        // 4th Device = 2 (Far Right), etc.
+        // This ensures distinct positions for multiple devices.
+        if (activeDevices.length === 0) device.x = 0;
+        else if (activeDevices.length % 2 === 1) device.x = Math.ceil(activeDevices.length / 2);
+        else device.x = -Math.ceil(activeDevices.length / 2);
+        
         activeDevices.push(device);
-        log('INFO', `Registered: ${device.name}`);
-        io.emit('device_list', activeDevices);
+        
+        log('INFO', `Registered: ${device.name} at Position X:${device.x}`);
         socket.emit('register_confirm', { id: socket.id });
+        
+        // UPDATE EVERYONE (So all devices know about each other)
+        io.emit('device_list', activeDevices);
     });
 
-    // B. LOG RELAY
+    // B. REMOTE TELEMETRY (Debugging)
     socket.on('remote_log', (data) => {
         const d = activeDevices.find(dev => dev.id === socket.id);
         const name = d ? d.name : "Unknown";
@@ -98,20 +109,41 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('debug_broadcast', { sender: name, message: data.message });
     });
 
-    // C. CORE FEATURES (Swipe, File, Mouse, Clipboard)
+    // C. SWIPE & VECTOR MATH (Smart Trigger)
     socket.on('swipe_event', (data) => {
+        // Broadcast to ALL devices (so Ghost Hand appears on the correct screen)
         socket.broadcast.emit('swipe_event', data);
-        if (data.action === 'release') log('SWIPE', `Gesture Released`);
+        if (data.action === 'release') log('SWIPE', `Gesture Released`, { vx: data.vx });
     });
 
-    socket.on('preview_header', (data) => io.to(data.targetId).emit('preview_header', data));
-    socket.on('file_payload', (data) => io.to(data.targetId).emit('content_transfer', data));
-    socket.on('mouse_teleport', (data) => socket.broadcast.emit('mouse_teleport', data));
-    socket.on('clipboard_sync', (data) => socket.broadcast.emit('clipboard_sync', data));
+    // D. HOLOGRAM PROTOCOL (Header)
+    socket.on('preview_header', (data) => {
+        const target = activeDevices.find(d => d.id === data.targetId);
+        const name = target ? target.name : "Unknown";
+        log('FILE', `Sending Hologram (${data.fileType})`, { to: name, size: data.thumbnail.length });
+        
+        // Direct Tunnel to Target
+        io.to(data.targetId).emit('preview_header', data);
+    });
 
+    // E. FILE TRANSFER (Payload)
+    socket.on('file_payload', (data) => {
+        log('FILE', `Transferring Content: ${data.fileName}`);
+        io.to(data.targetId).emit('content_transfer', data);
+    });
+
+    // F. UNIFIED UTILS (Mouse & Clipboard)
+    socket.on('mouse_teleport', (data) => socket.broadcast.emit('mouse_teleport', data));
+    socket.on('clipboard_sync', (data) => {
+        log('CLIP', 'Clipboard Synced');
+        socket.broadcast.emit('clipboard_sync', data);
+    });
+
+    // G. DISCONNECT
     socket.on('disconnect', () => {
         activeDevices = activeDevices.filter(d => d.id !== socket.id);
         io.emit('device_list', activeDevices);
+        log('INFO', `Client Disconnected: ${socket.id}`);
     });
 });
 
