@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui'; // Required for Isolate communication
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
@@ -9,24 +10,25 @@ import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:gal/gal.dart';
-import 'package:video_thumbnail/video_thumbnail.dart'; 
+import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class SocketService with ChangeNotifier {
   IO.Socket? _socket;
   String? _myId;
   List<dynamic> _activeDevices = [];
   
+  // STATE
   bool _isConnected = false;
   bool _isScanning = false;
-  Timer? _heartbeatTimer; 
-
-  // STATE
   bool _isReceiving = false; 
   bool _isConferenceMode = false;
+  
+  // DATA
   Uint8List? _incomingThumbnail; 
   String? _incomingPlaceholderType; 
-
-  // FILE DATA
   Map<String, dynamic>? _incomingSwipeData;
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
@@ -57,27 +59,109 @@ class SocketService with ChangeNotifier {
   bool get showVirtualCursor => _showVirtualCursor;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
 
-  // --- TELEMETRY LOGGER (NEW) ---
+  // =========================================================
+  // 1. INITIALIZATION & BACKGROUND SERVICE
+  // =========================================================
+  
+  SocketService() {
+    _initBackgroundService();
+  }
+
+  Future<void> _initBackgroundService() async {
+    if (!Platform.isAndroid) return; // Background service mainly for Android
+
+    await Permission.notification.request();
+    final service = FlutterBackgroundService();
+
+    const AndroidNotificationChannel channel = AndroidNotificationChannel(
+      'spatial_flow_service', 
+      'SpatialFlow Core',
+      description: 'Keeps connection alive for transfers',
+      importance: Importance.low, 
+    );
+
+    final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
+
+    if (Platform.isIOS || Platform.isAndroid) {
+      await flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()?.createNotificationChannel(channel);
+    }
+
+    await service.configure(
+      androidConfiguration: AndroidConfiguration(
+        onStart: onBackgroundStart, // Standard entry point
+        autoStart: true,
+        isForegroundMode: true, // CRITICAL: Keeps app alive in foreground
+        notificationChannelId: 'spatial_flow_service',
+        initialNotificationTitle: 'SpatialFlow',
+        initialNotificationContent: 'Neural Core Active',
+        foregroundServiceNotificationId: 888,
+      ),
+      iosConfiguration: IosConfiguration(
+        autoStart: true,
+        onForeground: onBackgroundStart,
+      ),
+    );
+
+    service.startService();
+    log("Background Service Initialized");
+  }
+
+  // Used by FlutterBackgroundService to keep the isolate alive
+  @pragma('vm:entry-point')
+  static void onBackgroundStart(ServiceInstance service) async {
+    DartPluginRegistrant.ensureInitialized();
+    // This function keeps the Dart Isolate alive.
+    // We don't need complex logic here because isForegroundMode: true
+    // keeps our main SocketService alive in the main isolate.
+  }
+
+  // =========================================================
+  // 2. EXPORT SERVICE (Saving Files)
+  // =========================================================
+
+  Future<void> _saveToGallery(String filePath, String type) async {
+    try {
+      log("Exporting to Gallery: $filePath");
+      // Request permissions first
+      if (Platform.isAndroid) {
+         await Permission.storage.request();
+         await Permission.photos.request();
+         await Permission.videos.request();
+         await Permission.manageExternalStorage.request();
+      }
+
+      if (type == 'video') {
+        await Gal.putVideo(filePath);
+      } else {
+        await Gal.putImage(filePath);
+      }
+      log("Export Successful");
+    } catch (e) {
+      log("Export Error (Gal): $e");
+      // Fallback: The file is already in App Doc/Temp dir, so it's safe.
+    }
+  }
+
+  // =========================================================
+  // 3. LOGGING (Telemetry)
+  // =========================================================
   void log(String message) {
-    // 1. Print locally
     print("[LOCAL] $message");
-    
-    // 2. Send to Server (and then to PC)
     if (_socket != null && _socket!.connected) {
       _socket!.emit('remote_log', {'message': message});
     }
   }
 
-  // --- NETWORK LOGIC ---
+  // =========================================================
+  // 4. NETWORK LOGIC (Discovery & Socket)
+  // =========================================================
+
   void startDiscovery() async {
-    // Don't stop even if already scanning, just restart logic to be safe
     _isScanning = true;
     notifyListeners();
-    
     log("Starting UDP Beacon Discovery...");
 
     try {
-      // Bind to Any IPv4 address on Port 8888
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
         socket.broadcastEnabled = true;
         socket.listen((RawSocketEvent event) {
@@ -85,18 +169,14 @@ class SocketService with ChangeNotifier {
             Datagram? dg = socket.receive();
             if (dg != null) {
               String message = utf8.decode(dg.data);
-              
-              // THE LOGIC: If we hear the beacon, connect immediately.
               if (message.startsWith("SPATIAL_ANNOUNCE")) {
                 var parts = message.split("|");
                 if (parts.length > 1) {
                   String serverIp = parts[1];
-                  
-                  // Avoid reconnecting to same IP
                   if (_socket == null || !_socket!.connected || !_socket!.io.uri.contains(serverIp)) {
                      log("Beacon Found! Connecting to $serverIp");
                      connectToSpecificIP(serverIp);
-                     socket.close(); // Stop listening once found
+                     socket.close(); 
                   }
                 }
               }
@@ -126,15 +206,14 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('register_confirm', (data) => _myId = data['id']);
     _socket!.on('device_list', (data) { _activeDevices = data; notifyListeners(); });
+    
     _socket!.on('disconnect', (_) { 
        log("Disconnected from Core");
        _isConnected = false; 
        notifyListeners(); 
     });
 
-    // --- DEBUG RELAY RECEIVER ---
     _socket!.on('debug_broadcast', (data) {
-       // This prints logs from the OTHER device into THIS terminal
        print("\x1b[33m[${data['sender']}] ${data['message']}\x1b[0m");
     });
 
@@ -155,9 +234,9 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('transfer_request', (data) => _executeFileTransfer(data['targetId']));
 
-    // 1. RECEIVE HOLOGRAM
+    // --- RECEIVE HOLOGRAM ---
     _socket!.on('preview_header', (data) {
-       log("Received Hologram Header. Size: ${data['thumbnail'].length} bytes");
+       log("Received Hologram Header.");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
@@ -167,7 +246,7 @@ class SocketService with ChangeNotifier {
        notifyListeners();
     });
 
-    // 2. RECEIVE FILE
+    // --- RECEIVE FILE (Includes Export Service) ---
     _socket!.on('content_transfer', (data) async {
        try {
          log("Received Full Payload. Saving...");
@@ -179,18 +258,20 @@ class SocketService with ChangeNotifier {
          String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
          String uniqueFileName = "${originalName.split('.').first}_$timestamp.${originalName.split('.').last}";
          
+         // 1. Save to Temp/Docs
          final tempDir = await getTemporaryDirectory();
          final tempFile = File('${tempDir.path}/$uniqueFileName');
          await tempFile.writeAsBytes(bytes, flush: true);
 
+         // 2. EXPORT SERVICE (Save to Gallery)
          if (Platform.isAndroid || Platform.isIOS) {
-             Gal.putImage(tempFile.path).then((_) { if(type=='video') Gal.putVideo(tempFile.path); });
+             await _saveToGallery(tempFile.path, type);
          } else {
              final docDir = await getApplicationDocumentsDirectory();
              File('${docDir.path}/SpatialFlow/$uniqueFileName').create(recursive: true).then((f) => f.writeAsBytes(bytes));
          }
 
-         log("File Saved Successfully: $uniqueFileName");
+         log("File Saved & Exported: $uniqueFileName");
          _lastReceivedFilePath = tempFile.path;
          _incomingContentType = type;
          _transferStatus = "RECEIVED";
@@ -211,7 +292,10 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  // --- ACTIONS ---
+  // =========================================================
+  // 5. ACTIONS
+  // =========================================================
+
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
     log("Triggering Transfer. Velocity: $vx");
@@ -240,22 +324,20 @@ class SocketService with ChangeNotifier {
      notifyListeners();
      try {
        for (var file in _stagedFiles) {
-         
-         // GENERATE HOLOGRAM
-         log("Generating Hologram for ${file.path}");
+         // Generate Hologram
+         log("Generating Hologram...");
          Uint8List? thumbBytes;
          if (_stagedFileType == 'video') {
             try {
               thumbBytes = await VideoThumbnail.thumbnailData(
                 video: file.path, imageFormat: ImageFormat.JPEG, maxWidth: 300, quality: 50,
               );
-            } catch(e) { log("Thumbnail Gen Error: $e"); }
+            } catch(e) { log("Thumbnail Error: $e"); }
          } else {
             thumbBytes = await file.readAsBytes(); 
          }
 
          if (thumbBytes != null) {
-            log("Sending Hologram Header...");
             _socket!.emit('preview_header', {
                'targetId': targetId, 'senderId': _myId,
                'thumbnail': base64Encode(thumbBytes),
@@ -263,11 +345,9 @@ class SocketService with ChangeNotifier {
             });
          }
 
-         // SEND FILE
-         log("Reading File Bytes...");
+         // Send File
+         log("Sending Payload...");
          List<int> bytes = await file.readAsBytes();
-         log("Sending Payload (${bytes.length} bytes)...");
-         
          _socket!.emit('file_payload', {
            'targetId': targetId, 'senderId': _myId, 'fileData': base64Encode(bytes),
            'fileName': file.path.split('/').last, 'fileType': _stagedFileType
@@ -311,4 +391,3 @@ class SocketService with ChangeNotifier {
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
   void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); }
 }
-
