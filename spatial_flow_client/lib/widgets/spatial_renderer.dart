@@ -31,13 +31,13 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     super.didUpdateWidget(oldWidget);
     final service = Provider.of<SocketService>(context, listen: false);
     
-    // OPEN CANVAS: Only on Release (Receiving)
+    // OPEN: Only when receiving starts (triggered by Hologram)
     if (service.isReceiving && _entryController!.status == AnimationStatus.dismissed) {
         _calculateEntryDirection(service);
         _entryController!.forward();
     }
     
-    // CLOSE CANVAS
+    // CLOSE: When view cleared
     if (!service.isReceiving && _entryController!.status == AnimationStatus.completed) {
         _entryController!.reverse();
         _controller?.dispose();
@@ -45,7 +45,6 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
         _isVideoReady = false;
     }
 
-    // LOAD VIDEO
     if (service.lastReceivedFilePath != null && service.incomingContentType == 'video' && _controller == null) {
         _initVideo(File(service.lastReceivedFilePath!));
     }
@@ -55,42 +54,31 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
     _controller = VideoPlayerController.file(file);
     await _controller!.initialize();
     if (!mounted) return;
-    setState(() {
-      _isVideoReady = true;
-      _controller!.play();
-      _controller!.setLooping(true);
-    });
+    setState(() { _isVideoReady = true; _controller!.play(); _controller!.setLooping(true); });
   }
 
   void _calculateEntryDirection(SocketService service) {
-    double startX = 1.0; 
-    _slideAnimation = Tween<Offset>(begin: Offset(startX, 0), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
+    _slideAnimation = Tween<Offset>(begin: const Offset(1.0, 0), end: Offset.zero).animate(CurvedAnimation(parent: _entryController!, curve: Curves.easeOutExpo));
   }
 
   @override
-  void dispose() {
-    _controller?.dispose();
-    _entryController?.dispose();
-    _pulseController?.dispose();
-    super.dispose();
-  }
+  void dispose() { _controller?.dispose(); _entryController?.dispose(); _pulseController?.dispose(); super.dispose(); }
 
   @override
   Widget build(BuildContext context) {
     final service = Provider.of<SocketService>(context);
     final swipeData = service.incomingSwipeData;
     
-    // SAFETY CHECK 1: PREVENT SELF-RENDERING
-    // If I am the sender, do not render this view (it blocks the dashboard)
+    // SAFETY: If I am the sender, DO NOT render anything.
     if (swipeData != null && swipeData['senderId'] == service.myId) {
       return const SizedBox();
     }
 
+    // GHOST HAND LOGIC: Only show if dragging is true AND not receiving yet.
     bool isDragging = swipeData != null && swipeData['isDragging'] == true;
     
-    // LOGIC: Show Canvas only if NOT dragging and (Receiving OR Has File)
-    // This ensures Layer 3 (Black BG) doesn't cover Layer 2 (Ghost Hand)
-    bool showCanvas = !isDragging && (service.isReceiving || service.lastReceivedFilePath != null);
+    // CANVAS LOGIC: Only show if we actually have data (Hologram or File)
+    bool showCanvas = service.isReceiving || service.lastReceivedFilePath != null;
 
     return Stack(
       children: [
@@ -98,42 +86,40 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
         ..._buildNetworkMap(service, context),
 
         // LAYER 2: GHOST HAND (Interaction)
+        // Added IgnorePointer so this doesn't block touches if it glitches
         if (isDragging)
-          Positioned(
-            left: (swipeData['x'] * MediaQuery.of(context).size.width).clamp(0.0, MediaQuery.of(context).size.width - 120),
-            top: (swipeData['y'] * MediaQuery.of(context).size.height).clamp(0.0, MediaQuery.of(context).size.height - 160),
-            child: FadeTransition(
-              opacity: _pulseController!,
-              child: Transform.rotate(
-                angle: -0.2, 
-                child: Container(
-                  width: 120, height: 160,
-                  decoration: BoxDecoration(
-                    color: Colors.black54, 
-                    borderRadius: BorderRadius.circular(20), 
-                    border: Border.all(color: const Color(0xFF00E676), width: 2),
-                    boxShadow: [BoxShadow(color: const Color(0xFF00E676).withOpacity(0.3), blurRadius: 20, spreadRadius: 2)]
-                  ),
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                       Icon(swipeData['fileType'] == 'video' ? Icons.videocam : Icons.image, color: Colors.white, size: 40),
-                       const SizedBox(height: 10),
-                       const Text("Incoming...", style: TextStyle(color: Colors.white, fontSize: 10))
-                    ],
+          IgnorePointer(
+            child: Positioned(
+              left: (swipeData['x'] * MediaQuery.of(context).size.width).clamp(0.0, MediaQuery.of(context).size.width - 120),
+              top: (swipeData['y'] * MediaQuery.of(context).size.height).clamp(0.0, MediaQuery.of(context).size.height - 160),
+              child: FadeTransition(
+                opacity: _pulseController!,
+                child: Transform.rotate(
+                  angle: -0.2, 
+                  child: Container(
+                    width: 120, height: 160,
+                    decoration: BoxDecoration(
+                      color: Colors.black54, 
+                      borderRadius: BorderRadius.circular(20), 
+                      border: Border.all(color: const Color(0xFF00E676), width: 2),
+                      boxShadow: [BoxShadow(color: const Color(0xFF00E676).withOpacity(0.3), blurRadius: 20, spreadRadius: 2)]
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                         Icon(swipeData['fileType'] == 'video' ? Icons.videocam : Icons.image, color: Colors.white, size: 40),
+                         const SizedBox(height: 10),
+                         const Text("Incoming...", style: TextStyle(color: Colors.white, fontSize: 10))
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
           ),
           
-        // LAYER 2.5: MOUSE
         if (service.showVirtualCursor)
-           Positioned(
-             left: service.virtualMousePos.dx, 
-             top: service.virtualMousePos.dy, 
-             child: const MouseCursorWidget()
-           ),
+           Positioned(left: service.virtualMousePos.dx, top: service.virtualMousePos.dy, child: const MouseCursorWidget()),
 
         // LAYER 3: UNIFIED CANVAS (Content)
         if (showCanvas)
@@ -142,13 +128,8 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
             child: Positioned.fill(
               child: Stack(
                 children: [
-                  // A. BLACK BACKGROUND
                   Container(color: Colors.black),
-
-                  // B. CONTENT
                   Center(child: _buildContent(service)),
-
-                  // C. CLOSE BUTTON
                   Positioned(
                     top: 50, right: 20,
                     child: FloatingActionButton.small(
@@ -157,17 +138,8 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
                       child: const Icon(Icons.close, color: Colors.white),
                     ),
                   ),
-
-                  // D. STATUS
                   if (service.transferStatus == "INCOMING..." || service.transferStatus == "RECEIVING...")
-                     Positioned(
-                       bottom: 100, 
-                       child: Container(
-                         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), 
-                         color: Colors.black54, 
-                         child: const Text("Syncing...", style: TextStyle(color: Colors.white))
-                       )
-                     )
+                     Positioned(bottom: 100, child: Container(padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8), color: Colors.black54, child: const Text("Syncing...", style: TextStyle(color: Colors.white))))
                 ],
               ),
             ),
@@ -177,23 +149,18 @@ class _SpatialRendererState extends State<SpatialRenderer> with TickerProviderSt
   }
 
   Widget _buildContent(SocketService service) {
-    // 1. VIDEO
     if (service.incomingContentType == 'video' && _isVideoReady && _controller != null) {
        return AspectRatio(aspectRatio: _controller!.value.aspectRatio, child: VideoPlayer(_controller!));
     }
-    // 2. FILE (High Res)
     if (service.lastReceivedFilePath != null && service.incomingContentType != 'video') {
        return Image.file(File(service.lastReceivedFilePath!), key: ValueKey(service.lastReceivedFilePath), fit: BoxFit.contain);
     }
-    // 3. HOLOGRAM (RAM Preview)
     if (service.incomingThumbnail != null) {
        return Image.memory(service.incomingThumbnail!, fit: BoxFit.contain, gaplessPlayback: true);
     }
-    // 4. LOADING
     return const CircularProgressIndicator(color: Color(0xFF00E676));
   }
 
-  // --- HELPERS ---
   List<Widget> _buildNetworkMap(SocketService service, BuildContext context) {
     var me = service.activeDevices.firstWhere((d) => d['id'] == service.myId, orElse: () => null);
     if (me == null) return [];
