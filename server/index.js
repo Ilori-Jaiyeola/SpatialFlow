@@ -4,171 +4,153 @@ const { Server } = require('socket.io');
 const dgram = require('dgram');
 const os = require('os');
 
-// --- SETUP ---
+// ============================================================
+//  CONFIG: MANUAL IP OVERRIDE
+//  If connection fails, paste your REAL PC IP here (e.g., "192.168.1.105")
+//  Leave it as "" to use Auto-Detection.
+// ============================================================
+const MANUAL_IP = ""; 
+// ============================================================
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    maxHttpBufferSize: 1e8, // 100 MB Limit for large video files
+    maxHttpBufferSize: 1e8, // 100MB Limit (Crucial for Video)
     cors: { origin: "*" }
 });
 
-// --- STATE MANAGEMENT ---
 let activeDevices = [];
 
-// --- LOGGING SYSTEM (The Control Tower) ---
+// --- LOGGING UTILITY ---
 function log(tag, message, data = "") {
     const time = new Date().toISOString().split('T')[1].split('.')[0];
-    const color = {
-        'INFO': '\x1b[36m', // Cyan
-        'SWIPE': '\x1b[35m', // Magenta
-        'FILE': '\x1b[33m', // Yellow
-        'MOUSE': '\x1b[32m', // Green
-        'CLIP': '\x1b[34m', // Blue
-        'ERROR': '\x1b[31m', // Red
-        'RESET': '\x1b[0m'
+    const color = { 
+        'INFO': '\x1b[36m', 'SWIPE': '\x1b[35m', 'FILE': '\x1b[33m', 
+        'MOUSE': '\x1b[32m', 'CLIP': '\x1b[34m', 'ERROR': '\x1b[31m', 'RESET': '\x1b[0m' 
     };
     console.log(`${color['RESET']}[${time}] ${color[tag] || ''}[${tag}] ${message} ${data ? JSON.stringify(data) : ''}${color['RESET']}`);
 }
 
-// --- 1. OMNI-BROADCASTING (UDP Discovery) ---
-const udpSocket = dgram.createSocket('udp4');
-udpSocket.bind(8888, () => {
-    udpSocket.setBroadcast(true);
-    log('INFO', 'UDP Beacon Active on Port 8888');
-});
-
+// --- SMART IP FINDER (Fixes the Connection Issue) ---
 function getLocalIP() {
+    if (MANUAL_IP.length > 0) return MANUAL_IP;
+
     const interfaces = os.networkInterfaces();
     let candidates = [];
 
+    console.log("Scanning Network Interfaces:");
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
-            // Must be IPv4 and NOT internal (localhost)
             if (iface.family === 'IPv4' && !iface.internal) {
                 const ip = iface.address;
-                
-                // RULE 1: IGNORE VirtualBox / VMware (192.168.56.x)
-                if (ip.startsWith('192.168.56.')) continue;
-                
-                // RULE 2: PRIORITIZE Home/Office Wi-Fi (192.168.0.x or 192.168.1.x)
-                if (ip.startsWith('192.168.0.') || ip.startsWith('192.168.1.') || ip.startsWith('172.')) {
-                    return ip; // Found the best candidate, return immediately!
-                }
+                console.log(` - Found: ${name} -> ${ip}`);
 
-                // Keep others (like 10.x.x.x) as backups
-                candidates.push(ip);
+                // RULE 1: BLOCK Virtual Adapters
+                if (ip.startsWith('192.168.56.')) continue; 
+                if (ip.startsWith('192.168.137.')) continue; 
+                
+                // RULE 2: PRIORITIZE Home/Office Wi-Fi
+                if (ip.startsWith('192.168.0.') || ip.startsWith('192.168.1.') || ip.startsWith('172.') || ip.startsWith('10.')) {
+                    candidates.unshift(ip);
+                } else {
+                    candidates.push(ip);
+                }
             }
         }
     }
     
-    // If no perfect home match, return the first valid backup
-    return candidates.length > 0 ? candidates[0] : '127.0.0.1';
+    // Pick best candidate
+    const chosen = candidates.length > 0 ? candidates[0] : '127.0.0.1';
+    console.log(`>>> AUTO-SELECTED IP: ${chosen}`);
+    return chosen;
 }
 
-// Broadcast IP every second so devices can find the server automatically
+// --- 1. OMNI-BROADCASTING (UDP Beacon) ---
+const udpSocket = dgram.createSocket('udp4');
+udpSocket.bind(8888, () => {
+    udpSocket.setBroadcast(true);
+    log('INFO', 'UDP Discovery Beacon Active');
+});
+
+const MY_IP = getLocalIP();
+
 setInterval(() => {
-    const message = Buffer.from(`SPATIAL_ANNOUNCE|${getLocalIP()}`);
+    const message = Buffer.from(`SPATIAL_ANNOUNCE|${MY_IP}`);
     udpSocket.send(message, 0, message.length, 8888, '255.255.255.255');
 }, 1000);
 
 // --- 2. SOCKET LOGIC (The Neural Core) ---
 io.on('connection', (socket) => {
     const clientIp = socket.handshake.address;
-    log('INFO', `New Connection: ${socket.id} from ${clientIp}`);
+    log('INFO', `New Connection: ${socket.id}`);
 
-    // A. DEVICE REGISTRATION & POSITIONING
+    // A. REGISTRATION & TOPOLOGY
     socket.on('register', (device) => {
         device.id = socket.id;
         device.ip = clientIp;
-        
-        // Smart Positioning Logic:
-        // First device = Left (-1), Second device = Right (1)
-        // This enables the "Vector Math" on the client to know which way to swipe.
+        // Assign Position: First = Left (-1), Second = Right (1)
         device.x = activeDevices.length === 0 ? -1 : 1; 
-        device.y = 0;
-
         activeDevices.push(device);
         
         log('INFO', `Device Registered: ${device.name} (${device.type}) at X:${device.x}`);
-        
         socket.emit('register_confirm', { id: socket.id });
         io.emit('device_list', activeDevices);
     });
 
-    // B. REMOTE LOGGING (The Telemetry Relay)
+    // B. TELEMETRY RELAY (Logs from Phone -> PC)
     socket.on('remote_log', (data) => {
-        const device = activeDevices.find(d => d.id === socket.id);
-        const name = device ? device.name : "Unknown";
-        
-        // 1. Show in Server Terminal
+        const d = activeDevices.find(dev => dev.id === socket.id);
+        const name = d ? d.name : "Unknown";
         console.log(`\x1b[33m[REMOTE] [${name}]: ${data.message}\x1b[0m`);
-        
-        // 2. Relay to PC (for debugging without looking at server)
-        socket.broadcast.emit('debug_broadcast', { 
-            sender: name, 
-            message: data.message 
-        });
+        socket.broadcast.emit('debug_broadcast', { sender: name, message: data.message });
     });
 
-    // C. VECTOR SWIPE LOGIC
+    // C. SWIPE & VECTOR LOGIC
     socket.on('swipe_event', (data) => {
-        // Relay gesture data to all other devices so they can render the "Ghost Hand"
+        // Broadcast movement to allow Ghost Hand rendering
         socket.broadcast.emit('swipe_event', data);
-
+        
         if (data.action === 'release') {
-            log('SWIPE', `Gesture Released by ${data.senderId}`, { velocity: data.vx });
+            log('SWIPE', `Gesture Released by ${data.senderId}`, { vx: data.vx });
         }
     });
 
     // D. HOLOGRAM PROTOCOL (Header)
     socket.on('preview_header', (data) => {
         const target = activeDevices.find(d => d.id === data.targetId);
-        const targetName = target ? target.name : "Unknown";
+        const name = target ? target.name : "Unknown";
+        log('FILE', `Sending Hologram (${data.fileType})`, { to: name, size: data.thumbnail.length });
         
-        log('FILE', `Sending Hologram (${data.fileType})`, { to: targetName, size: data.thumbnail.length });
-
-        // Direct routing to target
+        // Direct Routing
         io.to(data.targetId).emit('preview_header', data);
     });
 
     // E. FILE TRANSFER (Payload)
     socket.on('file_payload', (data) => {
         const target = activeDevices.find(d => d.id === data.targetId);
-        const targetName = target ? target.name : "Unknown";
-
-        log('FILE', `Transferring Content: ${data.fileName}`, { to: targetName });
-
+        const name = target ? target.name : "Unknown";
+        log('FILE', `Transferring Content: ${data.fileName}`, { to: name });
+        
+        // Direct Routing
         io.to(data.targetId).emit('content_transfer', data);
     });
 
-    // F. UNIFIED CANVAS: MOUSE TELEPORT
-    socket.on('mouse_teleport', (data) => {
-        // Relay mouse deltas to move the virtual cursor on the other screen
-        socket.broadcast.emit('mouse_teleport', data);
-    });
-
-    // G. UNIFIED CANVAS: SHARED CLIPBOARD
+    // F. UNIFIED UTILS (Mouse & Clipboard)
+    socket.on('mouse_teleport', (data) => socket.broadcast.emit('mouse_teleport', data));
     socket.on('clipboard_sync', (data) => {
-        log('CLIP', `Clipboard Synced`, { textLength: data.text.length });
+        log('CLIP', 'Clipboard Synced');
         socket.broadcast.emit('clipboard_sync', data);
     });
 
-    // H. CONNECTION STABILITY
-    socket.on('heartbeat', () => {
-        // Keep connection alive
-    });
-
+    // G. DISCONNECT
     socket.on('disconnect', () => {
-        const device = activeDevices.find(d => d.id === socket.id);
-        if (device) log('INFO', `Device Disconnected: ${device.name}`);
-        
         activeDevices = activeDevices.filter(d => d.id !== socket.id);
         io.emit('device_list', activeDevices);
+        log('INFO', `Client Disconnected: ${socket.id}`);
     });
 });
 
-const PORT = 3000;
-server.listen(PORT, '0.0.0.0', () => {
-    log('INFO', `Neural Core Online at http://${getLocalIP()}:${PORT}`);
+server.listen(3000, '0.0.0.0', () => {
+    log('INFO', `Neural Core Online at http://${MY_IP}:3000`);
+    if (MANUAL_IP === "") console.log("(If connection fails, add your IP to 'MANUAL_IP' at the top of server.js)");
 });
-
