@@ -11,6 +11,21 @@ import 'services/socket_service.dart';
 import 'widgets/spatial_renderer.dart';
 import 'widgets/glass_box.dart'; 
 import 'screens/calibration_screen.dart';
+import 'services/background_manager.dart'; // <--- IMPORT THIS
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // 1. ACTIVATE BACKGROUND NEURAL LINK
+  await initializeBackgroundService(); 
+  
+  runApp(
+    MultiProvider(
+      providers: [ChangeNotifierProvider(create: (_) => SocketService())],
+      child: const MyApp(),
+    ),
+  );
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -381,3 +396,4 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
     );
   }
 }
+
