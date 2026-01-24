@@ -18,7 +18,7 @@ const io = new Server(server, {
 
 let activeDevices = [];
 
-// --- LOGGING SYSTEM (Restored Full Verbosity) ---
+// --- LOGGING SYSTEM ---
 function log(tag, message, data = "") {
     const time = new Date().toISOString().split('T')[1].split('.')[0];
     const color = { 
@@ -28,19 +28,18 @@ function log(tag, message, data = "") {
     console.log(`${color['RESET']}[${time}] ${color[tag] || ''}[${tag}] ${message} ${data ? JSON.stringify(data) : ''}${color['RESET']}`);
 }
 
-// --- SMART IP FINDER (Restored Logic) ---
+// --- SMART IP FINDER ---
 function getLocalIP() {
     if (MANUAL_IP.length > 0) return MANUAL_IP;
     const interfaces = os.networkInterfaces();
     let candidates = [];
-    console.log("--- NETWORK SCAN ---");
+    
+    // console.log("--- NETWORK SCAN ---"); // Reduced noise
     for (const name of Object.keys(interfaces)) {
         for (const iface of interfaces[name]) {
             if (iface.family === 'IPv4' && !iface.internal) {
                 const ip = iface.address;
-                // BLOCK Virtual Adapters
                 if (ip.startsWith('192.168.56.') || ip.startsWith('192.168.137.')) continue;
-                // PRIORITIZE Home/Office
                 if (ip.startsWith('192.168.0.') || ip.startsWith('192.168.1.') || ip.startsWith('172.') || ip.startsWith('10.')) {
                     candidates.unshift(ip);
                 } else {
@@ -50,37 +49,55 @@ function getLocalIP() {
         }
     }
     const chosen = candidates.length > 0 ? candidates[0] : '127.0.0.1';
-    console.log(`>>> AUTO-SELECTED IP: ${chosen}`);
     return chosen;
 }
 
-// --- UDP BEACON (THE PC CONNECTION FIX) ---
-const udpSocket = dgram.createSocket('udp4');
-
-// CRITICAL CHANGE: Bind to Port 0 (Random) to free up Port 8888 for the PC App.
-udpSocket.bind(0, () => {
-    udpSocket.setBroadcast(true);
-    log('INFO', 'UDP Discovery Beacon Active (Non-Blocking Mode)');
-});
-
 const MY_IP = getLocalIP();
 
+// --- UDP DISCOVERY (THE FIX) ---
+const udpSocket = dgram.createSocket('udp4');
+
+udpSocket.on('message', (msg, rinfo) => {
+    const message = msg.toString().trim();
+
+    // 1. ACTIVE DISCOVERY (Instant Connect)
+    // When Android shouts "FIND_NEURAL_CORE", we reply immediately.
+    if (message === 'FIND_NEURAL_CORE') {
+        log('INFO', `Discovery Signal from ${rinfo.address}`);
+        const reply = Buffer.from(`SPATIAL_ANNOUNCE|${MY_IP}`);
+        
+        // Reply directly to the device that asked
+        udpSocket.send(reply, 0, reply.length, rinfo.port, rinfo.address, (err) => {
+            if (err) log('ERROR', 'Reply Failed', err);
+        });
+        return; 
+    }
+});
+
+// Bind to Port 41234 so phones know where to shout
+udpSocket.bind(41234, () => {
+    udpSocket.setBroadcast(true);
+    log('INFO', `Neural Core Online at http://${MY_IP}:3000`);
+    log('INFO', 'Discovery System Active (Listening on 41234)');
+});
+
+// 2. PASSIVE BEACON (Backup for legacy clients)
 setInterval(() => {
     const message = Buffer.from(`SPATIAL_ANNOUNCE|${MY_IP}`);
-    // We SEND to 8888, allowing clients to hear us without conflict.
     udpSocket.send(message, 0, message.length, 8888, '255.255.255.255');
 }, 1000);
+
 
 // --- THE NEURAL CORE (Socket Logic) ---
 io.on('connection', (socket) => {
     const clientIp = socket.handshake.address;
     log('INFO', `New Connection: ${socket.id}`);
 
-    // A. REGISTRATION & TOPOLOGY (Conference Mode Logic)
+    // A. REGISTRATION & TOPOLOGY
     socket.on('register', (device) => {
         device.id = socket.id;
         device.ip = clientIp;
-        // Smart Positioning
+        // Smart Positioning (Auto-Layout)
         if (activeDevices.length === 0) device.x = 0;
         else if (activeDevices.length % 2 === 1) device.x = Math.ceil(activeDevices.length / 2);
         else device.x = -Math.ceil(activeDevices.length / 2);
@@ -91,12 +108,11 @@ io.on('connection', (socket) => {
         socket.emit('register_confirm', { id: socket.id });
     });
 
-    // B. REMOTE TELEMETRY (Debugging)
+    // B. REMOTE TELEMETRY
     socket.on('remote_log', (data) => {
         const d = activeDevices.find(dev => dev.id === socket.id);
         const name = d ? d.name : "Unknown";
         console.log(`\x1b[33m[REMOTE] [${name}]: ${data.message}\x1b[0m`);
-        socket.broadcast.emit('debug_broadcast', { sender: name, message: data.message });
     });
 
     // C. SWIPE & VECTOR MATH
@@ -113,7 +129,7 @@ io.on('connection', (socket) => {
         io.to(data.targetId).emit('preview_header', data);
     });
 
-    // E. FILE TRANSFER (Payload)
+    // E. FILE TRANSFER
     socket.on('file_payload', (data) => {
         const target = activeDevices.find(d => d.id === data.targetId);
         const name = target ? target.name : "Unknown";
@@ -136,6 +152,4 @@ io.on('connection', (socket) => {
     });
 });
 
-server.listen(3000, '0.0.0.0', () => {
-    log('INFO', `Neural Core Online at http://${MY_IP}:3000`);
-});
+server.listen(3000, '0.0.0.0');
