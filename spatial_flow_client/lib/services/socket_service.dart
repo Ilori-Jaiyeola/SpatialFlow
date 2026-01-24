@@ -8,7 +8,6 @@ import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:open_filex/open_filex.dart';
 import 'package:gal/gal.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart'; 
@@ -97,7 +96,7 @@ class SocketService with ChangeNotifier {
     if (_socket != null && _socket!.connected) _socket!.emit('remote_log', {'message': message});
   }
 
-  // --- FIX 1: ACTIVE NEURAL DISCOVERY (SHOUT & LISTEN) ---
+  // --- 1. ACTIVE DISCOVERY (THE FIX) ---
   void startDiscovery() async {
     _isScanning = true; notifyListeners();
     log("Initializing Neural Discovery...");
@@ -107,7 +106,7 @@ class SocketService with ChangeNotifier {
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 0).then((socket) {
         socket.broadcastEnabled = true;
 
-        // 1. LISTEN FOR REPLY
+        // A. LISTEN FOR REPLY
         socket.listen((RawSocketEvent event) {
           if (event == RawSocketEvent.read) {
             Datagram? dg = socket.receive();
@@ -128,12 +127,11 @@ class SocketService with ChangeNotifier {
           }
         });
 
-        // 2. SHOUT TO THE NETWORK (Active Discovery)
-        // Send "FIND_NEURAL_CORE" to Port 41234
+        // B. SHOUT TO THE NETWORK
         String discoveryMsg = "FIND_NEURAL_CORE";
         List<int> data = utf8.encode(discoveryMsg);
-        
         try {
+           // Send to Port 41234 (Defined in Server)
            socket.send(data, InternetAddress("255.255.255.255"), 41234);
            log("Shouting: FIND_NEURAL_CORE...");
         } catch(e) {
@@ -211,37 +209,59 @@ class SocketService with ChangeNotifier {
     });
   }
 
+  // --- 2. TRIGGER LOGIC ---
   Future<void> triggerSwipeTransfer(double vx, double vy) async {
     if (_stagedFiles.isEmpty) return;
-    log("Triggering Transfer. Velocity: $vx");
-    var target = _findTarget(vx);
+    
+    // Use Smart Logic to find the NEAREST neighbor in that direction
+    var target = _findTarget(vx, vy); 
+    
     if (target != null) {
+        log("Target Locked: ${target['name']} (Pos: ${target['x']})");
         await _executeFileTransfer(target['id']); 
     } else {
-        log("No Target Found for Direction");
+        log("No Target Found in that direction.");
     }
   }
   
-  dynamic _findTarget(double vx) {
+  // --- 3. SMART TOPOLOGY ROUTER ---
+  dynamic _findTarget(double vx, double vy) {
      var me = _activeDevices.firstWhere((d) => d['id'] == _myId, orElse: () => null);
      if (me == null) return null;
+     
      int myX = me['x'] ?? 0;
-     return _activeDevices.firstWhere((d) {
+
+     // Filter candidates strictly by direction
+     var candidates = _activeDevices.where((d) {
         if (d['id'] == _myId) return false;
         int tX = d['x'] ?? 0;
+        
+        // Swipe Right (vx > 0) -> Target > Me
+        // Swipe Left (vx < 0) -> Target < Me
         return (vx > 0 && tX > myX) || (vx < 0 && tX < myX);
-     }, orElse: () => null);
+     }).toList();
+
+     if (candidates.isEmpty) return null;
+
+     // Sort by DISTANCE (Nearest Neighbor) to support Conference Mode
+     candidates.sort((a, b) {
+        int distA = ((a['x'] ?? 0) - myX).abs();
+        int distB = ((b['x'] ?? 0) - myX).abs();
+        return distA.compareTo(distB);
+     });
+
+     return candidates.first;
   }
 
-  // --- FIX 2: GREY SCREEN SAFETY NET ---
+  // --- 4. EXECUTE TRANSFER (With Safety Timer) ---
   Future<void> _executeFileTransfer(String targetId) async {
      _transferStatus = "SENDING...";
      notifyListeners();
      
-     // Safety Timer: If transfer takes >10s, force reset UI
+     // Failsafe: Reset UI if transfer hangs > 10s
      Timer safetyTimer = Timer(const Duration(seconds: 10), () {
         if (_transferStatus == "SENDING...") {
-             _transferStatus = "ERROR (Timeout)";
+             _transferStatus = "TIMEOUT";
              notifyListeners();
              Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
         }
@@ -271,7 +291,6 @@ class SocketService with ChangeNotifier {
          }
 
          if (thumbBytes != null) {
-            log("Sending Hologram (Size: ${thumbBytes.length} bytes)...");
             _socket!.emit('preview_header', { 
                'targetId': targetId, 
                'senderId': _myId, 
@@ -295,7 +314,7 @@ class SocketService with ChangeNotifier {
        _transferStatus = "SENT";
        notifyListeners();
        
-       safetyTimer.cancel(); // Cancel safety timer on success
+       safetyTimer.cancel(); // Success!
 
        Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
      } catch (e) { 
