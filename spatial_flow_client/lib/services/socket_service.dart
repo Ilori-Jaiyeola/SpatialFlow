@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:gal/gal.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart'; // IMPORT THIS
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -20,14 +21,12 @@ class SocketService with ChangeNotifier {
   String? _myId;
   List<dynamic> _activeDevices = [];
   
-  // --- RESTORED VARIABLES (Fixes Build Error) ---
   Timer? _heartbeatTimer; 
   bool _isConnected = false;
   bool _isScanning = false;
   bool _isReceiving = false; 
   bool _isConferenceMode = false; 
   
-  // DATA STATES
   Uint8List? _incomingThumbnail; 
   String? _incomingPlaceholderType; 
   Map<String, dynamic>? _incomingSwipeData; 
@@ -45,7 +44,7 @@ class SocketService with ChangeNotifier {
   // GETTERS
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
-  bool get isConferenceMode => _isConferenceMode; // (Fixes main.dart error)
+  bool get isConferenceMode => _isConferenceMode;
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   bool get isReceiving => _isReceiving;
@@ -58,7 +57,6 @@ class SocketService with ChangeNotifier {
   bool get showVirtualCursor => _showVirtualCursor;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
 
-  // --- INIT ---
   SocketService() { _initBackgroundService(); }
 
   Future<void> _initBackgroundService() async {
@@ -99,11 +97,13 @@ class SocketService with ChangeNotifier {
     if (_socket != null && _socket!.connected) _socket!.emit('remote_log', {'message': message});
   }
 
+  // --- FIX 1: ROBUST AUTO-CONNECT ---
   void startDiscovery() async {
     _isScanning = true; notifyListeners();
     log("Starting UDP Beacon Discovery...");
     try {
-      RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888).then((socket) {
+      // reuseAddress: true is CRITICAL for Android to share the listening port
+      RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888, reuseAddress: true, reusePort: true).then((socket) {
         socket.broadcastEnabled = true;
         socket.listen((RawSocketEvent event) {
           if (event == RawSocketEvent.read) {
@@ -139,10 +139,8 @@ class SocketService with ChangeNotifier {
     _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
     _socket!.on('debug_broadcast', (data) => print("\x1b[33m[${data['sender']}] ${data['message']}\x1b[0m"));
 
-    // --- INSTANT CLEANUP ON RELEASE ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
-            // If released, destroy data immediately (Fixes Grey Screen)
             if (data['action'] == 'release') {
                 _incomingSwipeData = null; 
                 notifyListeners(); 
@@ -157,14 +155,14 @@ class SocketService with ChangeNotifier {
     _socket!.on('transfer_request', (data) => _executeFileTransfer(data['targetId']));
 
     _socket!.on('preview_header', (data) {
-       log("Hologram Arrived.");
+       log("Hologram Arrived (Size: ${data['thumbnail'].length}).");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
        _incomingSenderId = data['senderId'];
        _isReceiving = true; 
        _lastReceivedFilePath = null; 
-       _incomingSwipeData = null; // Safety wipe
+       _incomingSwipeData = null; 
        notifyListeners();
     });
 
@@ -217,22 +215,61 @@ class SocketService with ChangeNotifier {
      }, orElse: () => null);
   }
 
+  // --- FIX 2: HOLOGRAM COMPRESSION ---
   Future<void> _executeFileTransfer(String targetId) async {
      _transferStatus = "SENDING...";
      notifyListeners();
      try {
        for (var file in _stagedFiles) {
          Uint8List? thumbBytes;
+         
+         // A. VIDEO THUMBNAIL
          if (_stagedFileType == 'video') {
-            try { thumbBytes = await VideoThumbnail.thumbnailData(video: file.path, imageFormat: ImageFormat.JPEG, maxWidth: 300, quality: 50); } catch(e) {}
-         } else { thumbBytes = await file.readAsBytes(); }
-
-         if (thumbBytes != null) {
-            _socket!.emit('preview_header', { 'targetId': targetId, 'senderId': _myId, 'thumbnail': base64Encode(thumbBytes), 'fileType': _stagedFileType });
+            try { 
+              thumbBytes = await VideoThumbnail.thumbnailData(
+                video: file.path, imageFormat: ImageFormat.JPEG, maxWidth: 300, quality: 50
+              ); 
+            } catch(e) {}
+         } 
+         // B. IMAGE THUMBNAIL (COMPRESSED)
+         else if (_stagedFileType == 'image') {
+            try {
+              thumbBytes = await FlutterImageCompress.compressWithFile(
+                file.path,
+                minWidth: 300,
+                minHeight: 300,
+                quality: 50, // Reduce quality to 50% for fast hologram
+              );
+            } catch (e) { log("Image Compress Error: $e"); }
+            
+            // Fallback if compression fails
+            if (thumbBytes == null) thumbBytes = await file.readAsBytes();
+         } 
+         // C. GENERIC FILE
+         else { 
+            thumbBytes = await file.readAsBytes(); 
          }
 
+         if (thumbBytes != null) {
+            log("Sending Hologram (Size: ${thumbBytes.length} bytes)...");
+            _socket!.emit('preview_header', { 
+               'targetId': targetId, 
+               'senderId': _myId, 
+               'thumbnail': base64Encode(thumbBytes), 
+               'fileType': _stagedFileType 
+            });
+         }
+
+         // SEND ACTUAL FILE
          List<int> bytes = await file.readAsBytes();
-         _socket!.emit('file_payload', { 'targetId': targetId, 'senderId': _myId, 'fileData': base64Encode(bytes), 'fileName': file.path.split('/').last, 'fileType': _stagedFileType });
+         _socket!.emit('file_payload', { 
+           'targetId': targetId, 
+           'senderId': _myId, 
+           'fileData': base64Encode(bytes), 
+           'fileName': file.path.split('/').last, 
+           'fileType': _stagedFileType 
+         });
+         
          await Future.delayed(const Duration(milliseconds: 300));
        }
        _transferStatus = "SENT";
@@ -267,5 +304,5 @@ class SocketService with ChangeNotifier {
   void syncClipboard(String t) { _socket!.emit('clipboard_sync', {'text': t}); }
   void sendMouseTeleport(String t, double x, double y) { _socket!.emit('mouse_teleport', {'targetId': t, 'dx': x, 'dy': y}); }
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
-  void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); } // (Fixes main.dart error)
+  void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); } 
 }
