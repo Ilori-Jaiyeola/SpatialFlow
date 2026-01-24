@@ -20,14 +20,17 @@ class SocketService with ChangeNotifier {
   String? _myId;
   List<dynamic> _activeDevices = [];
   
+  // --- RESTORED VARIABLES (Fixes Build Error) ---
+  Timer? _heartbeatTimer; 
   bool _isConnected = false;
   bool _isScanning = false;
   bool _isReceiving = false; 
+  bool _isConferenceMode = false; 
   
-  // STATE
+  // DATA STATES
   Uint8List? _incomingThumbnail; 
   String? _incomingPlaceholderType; 
-  Map<String, dynamic>? _incomingSwipeData; // <--- The culprit
+  Map<String, dynamic>? _incomingSwipeData; 
   String? _lastReceivedFilePath; 
   String? _incomingContentType;
   String _transferStatus = "IDLE"; 
@@ -42,6 +45,7 @@ class SocketService with ChangeNotifier {
   // GETTERS
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
+  bool get isConferenceMode => _isConferenceMode; // (Fixes main.dart error)
   List<dynamic> get activeDevices => _activeDevices;
   String? get myId => _myId;
   bool get isReceiving => _isReceiving;
@@ -135,18 +139,15 @@ class SocketService with ChangeNotifier {
     _socket!.on('disconnect', (_) { _isConnected = false; notifyListeners(); });
     _socket!.on('debug_broadcast', (data) => print("\x1b[33m[${data['sender']}] ${data['message']}\x1b[0m"));
 
-    // --- LOGIC FIX: INSTANT KILL ON RELEASE ---
+    // --- INSTANT CLEANUP ON RELEASE ---
     _socket!.on('swipe_event', (data) {
         if (data['senderId'] != _myId) {
-            
-            // 1. If released, DESTROY the data immediately.
+            // If released, destroy data immediately (Fixes Grey Screen)
             if (data['action'] == 'release') {
-                _incomingSwipeData = null; // This removes the Grey Screen instantly
+                _incomingSwipeData = null; 
                 notifyListeners(); 
                 return;
             }
-
-            // 2. Otherwise, update the Ghost Hand
             _incomingSwipeData = data;
             _incomingSwipeData!['isDragging'] = true; 
             notifyListeners();
@@ -155,19 +156,15 @@ class SocketService with ChangeNotifier {
 
     _socket!.on('transfer_request', (data) => _executeFileTransfer(data['targetId']));
 
-    // --- HOLOGRAM: OPEN THE PORTAL ---
     _socket!.on('preview_header', (data) {
-       log("Portal Opening: Hologram Received.");
+       log("Hologram Arrived.");
        String base64Thumb = data['thumbnail'];
        _incomingThumbnail = base64Decode(base64Thumb);
        _incomingPlaceholderType = data['fileType'];
        _incomingSenderId = data['senderId'];
        _isReceiving = true; 
        _lastReceivedFilePath = null; 
-       
-       // Ensure Ghost Hand is gone so it doesn't overlap the portal
-       _incomingSwipeData = null; 
-       
+       _incomingSwipeData = null; // Safety wipe
        notifyListeners();
     });
 
@@ -201,7 +198,6 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  // --- ACTIONS ---
   void triggerSwipeTransfer(double vx, double vy) {
     if (_stagedFiles.isEmpty) return;
     log("Triggering Transfer. Velocity: $vx");
@@ -258,12 +254,11 @@ class SocketService with ChangeNotifier {
   
   void clearStagedFiles() { _stagedFiles = []; _transferStatus = "IDLE"; notifyListeners(); }
   
-  // CLEAR EVERYTHING
   void clearView() { 
       _isReceiving = false; 
       _lastReceivedFilePath = null; 
       _incomingThumbnail = null; 
-      _incomingSwipeData = null; // Safety wipe
+      _incomingSwipeData = null; 
       notifyListeners(); 
   }
   
@@ -272,5 +267,5 @@ class SocketService with ChangeNotifier {
   void syncClipboard(String t) { _socket!.emit('clipboard_sync', {'text': t}); }
   void sendMouseTeleport(String t, double x, double y) { _socket!.emit('mouse_teleport', {'targetId': t, 'dx': x, 'dy': y}); }
   void openLastFile() { if (_lastReceivedFilePath != null) OpenFilex.open(_lastReceivedFilePath!); }
-  void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); }
+  void toggleConferenceMode(bool value) { _isConferenceMode = value; notifyListeners(); } // (Fixes main.dart error)
 }
