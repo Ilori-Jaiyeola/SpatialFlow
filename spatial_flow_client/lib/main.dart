@@ -8,27 +8,18 @@ import 'dart:ui';
 import 'package:wakelock_plus/wakelock_plus.dart'; 
 import 'package:desktop_drop/desktop_drop.dart'; 
 import 'services/socket_service.dart';
+import 'services/background_manager.dart'; // <--- Critical for Background Service
 import 'widgets/spatial_renderer.dart';
+import 'widgets/spatial_gesture_layer.dart'; // <--- Using the Separated Gesture File
 import 'widgets/glass_box.dart'; 
 import 'screens/calibration_screen.dart';
-import 'services/background_manager.dart'; // <--- IMPORT THIS
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // 1. ACTIVATE BACKGROUND NEURAL LINK
+  // 1. ACTIVATE BACKGROUND NEURAL LINK (The Heartbeat)
   await initializeBackgroundService(); 
   
-  runApp(
-    MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => SocketService())],
-      child: const MyApp(),
-    ),
-  );
-}
-
-void main() async {
-  WidgetsFlutterBinding.ensureInitialized();
   runApp(
     MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => SocketService())],
@@ -71,6 +62,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable(); 
+    // Start the Active Neural Discovery immediately
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -109,6 +101,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
        _initVideoPlayer(_selectedFiles.first);
     }
     
+    // Stage content for transfer
     Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
@@ -137,9 +130,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Provider.of<SocketService>(context, listen: false).clearStagedFiles();
   }
   
+  // Manual Send Button (Fallback)
   void _manualSend() {
       final service = Provider.of<SocketService>(context, listen: false);
-      service.triggerSwipeTransfer(500, 0); 
+      service.triggerSwipeTransfer(500, 0); // Simulate strong right swipe
   }
 
   @override
@@ -149,11 +143,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return DropTarget(
       onDragDone: (details) => _onFilesDropped(details.files),
       child: SpatialGestureLayer(
+        // Pass file metadata to the gesture layer for the "Ghost Hand"
         extraData: {
            'fileType': _fileType ?? 'file',
            'timestamp': DateTime.now().millisecondsSinceEpoch
         },
         onDragUpdate: (details) {
+          // Allows dragging the local preview window around
           setState(() => _dragPosition += details.delta);
         },
         child: Scaffold(
@@ -206,7 +202,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // 2. SENDER PREVIEW (Draggable)
+              // 2. SENDER PREVIEW (Draggable Window)
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
@@ -214,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildDraggableContent(context), 
                 ),
 
-              // 3. RECEIVER RENDERER
+              // 3. RECEIVER RENDERER (The Unified Canvas)
               const SpatialRenderer(),
             ],
           ),
@@ -258,6 +254,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   : Image.file(_selectedFiles.first, fit: BoxFit.contain), 
             ),
           ),
+          // Close Button
           Positioned(
             top: 5, right: 5,
             child: GestureDetector(
@@ -269,6 +266,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
+          // Manual Send Button
           Positioned(
             bottom: 10, right: 10,
             child: FloatingActionButton.small(
@@ -327,73 +325,3 @@ class _DashboardScreenState extends State<DashboardScreen> {
       showDialog(context: context, builder: (context) => AlertDialog(backgroundColor: const Color(0xFF1E1E1E), title: const Text("Manual Connection", style: TextStyle(color: Colors.white)), content: TextField(controller: ipController, style: const TextStyle(color: Colors.white), decoration: const InputDecoration(labelText: "Enter PC IP", labelStyle: TextStyle(color: Colors.white54))), actions: [ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF00E676)), onPressed: () { Navigator.pop(context); if (ipController.text.isNotEmpty) service.connectToSpecificIP(ipController.text.trim()); }, child: const Text("Connect", style: TextStyle(color: Colors.black)))]));
   }
 }
-
-class SpatialGestureLayer extends StatefulWidget {
-  final Widget child;
-  final Function(DragUpdateDetails)? onDragUpdate;
-  final Map<String, dynamic> extraData; 
-  const SpatialGestureLayer({Key? key, required this.child, this.onDragUpdate, this.extraData = const {}}) : super(key: key);
-  @override
-  State<SpatialGestureLayer> createState() => _SpatialGestureLayerState();
-}
-
-class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
-  Offset _startPos = Offset.zero;
-  DateTime _startTime = DateTime.now();
-  
-  @override
-  Widget build(BuildContext context) {
-    final socketService = Provider.of<SocketService>(context, listen: false);
-    final size = MediaQuery.of(context).size;
-    
-    return Listener(
-      onPointerDown: (event) { _startPos = event.position; _startTime = DateTime.now(); },
-      onPointerMove: (event) {
-        if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
-        
-        socketService.sendSwipeData({
-            'x': event.position.dx / size.width, 
-            'y': event.position.dy / size.height, 
-            'isDragging': true, 
-            'action': 'move',
-            ...widget.extraData 
-        });
-        
-        if (Platform.isWindows) {
-           if (event.position.dx < 5) {
-              var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
-              if (left != null) socketService.sendMouseTeleport(left['id'], event.delta.dx, event.delta.dy);
-           }
-           if (event.position.dx > size.width - 5) {
-              var right = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) > 0, orElse: () => null);
-              if (right != null) socketService.sendMouseTeleport(right['id'], event.delta.dx, event.delta.dy);
-           }
-        }
-      },
-      onPointerUp: (event) {
-        final duration = DateTime.now().difference(_startTime).inMilliseconds;
-        if (duration < 50) return; 
-
-        double dx = event.position.dx - _startPos.dx;
-        double dy = event.position.dy - _startPos.dy;
-        double vx = (dx / duration) * 1000;
-        double vy = (dy / duration) * 1000;
-
-        socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
-
-        bool isFast = vx.abs() > 100 || vy.abs() > 100; 
-        bool isFar = dx.abs() > (size.width * 0.2); 
-
-        if (isFast || isFar) {
-            // FIX: Haptic Feedback + Async Handling
-            HapticFeedback.mediumImpact();
-            socketService.triggerSwipeTransfer(vx, vy).catchError((e) {
-               print("Transfer Trigger Failed: $e");
-            });
-        }
-      },
-      child: widget.child,
-    );
-  }
-}
-
