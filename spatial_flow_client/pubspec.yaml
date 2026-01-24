@@ -31,7 +31,8 @@ dependencies:
 
   # ... other deps ...
   video_thumbnail: ^0.5.3  # <--- NEW: For Video Holograms
-  
+  flutter_image_compress: ^2.1.0
+
 
 
 
