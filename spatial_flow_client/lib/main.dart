@@ -56,7 +56,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     WakelockPlus.enable(); 
-    // Start discovery immediately
     Provider.of<SocketService>(context, listen: false).startDiscovery();
   }
 
@@ -65,8 +64,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _senderVideoController?.dispose();
     super.dispose();
   }
-
-  // --- LOGIC: FILE PICKING & PROCESSING ---
 
   void _onFilesDropped(List<XFile> files) => _processFiles(files);
   
@@ -90,14 +87,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _selectedFiles = files.map((x) => File(x.path)).toList();
       _fileType = type;
-      _dragPosition = const Offset(50, 200); // Reset position to be visible
+      _dragPosition = const Offset(50, 200); 
     });
 
     if (type == 'video') {
        _initVideoPlayer(_selectedFiles.first);
     }
     
-    // Broadcast "Ready" state to socket
     Provider.of<SocketService>(context, listen: false).broadcastContent(_selectedFiles, type);
   }
 
@@ -111,7 +107,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (!mounted) return;
 
     setState(() {
-      _senderVideoController!.setVolume(0); // Mute preview
+      _senderVideoController!.setVolume(0); 
       _senderVideoController!.play();
       _senderVideoController!.setLooping(true);
     });
@@ -126,11 +122,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     Provider.of<SocketService>(context, listen: false).clearStagedFiles();
   }
   
-  // LOGIC: MANUAL SEND TRIGGER
   void _manualSend() {
-     final service = Provider.of<SocketService>(context, listen: false);
-     // Simulate a fast right swipe (500 velocity)
-     service.triggerSwipeTransfer(500, 0); 
+      final service = Provider.of<SocketService>(context, listen: false);
+      service.triggerSwipeTransfer(500, 0); 
   }
 
   @override
@@ -140,8 +134,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return DropTarget(
       onDragDone: (details) => _onFilesDropped(details.files),
       child: SpatialGestureLayer(
-        // CRITICAL: SEND FILE TYPE IN SWIPE DATA
-        // This tells the receiver's Ghost Hand whether to show a Video Icon or Image Icon
         extraData: {
            'fileType': _fileType ?? 'file',
            'timestamp': DateTime.now().millisecondsSinceEpoch
@@ -168,12 +160,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                ),
             ],
           ),
-          floatingActionButton: _buildFab(), // Shows the Pick buttons
+          floatingActionButton: _buildFab(), 
           body: Stack(
             children: [
               _buildBackground(),
 
-              // 1. DASHBOARD UI (Status & Device List)
+              // 1. DASHBOARD UI
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(20.0),
@@ -199,7 +191,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ),
 
-              // 2. SENDER PREVIEW (Draggable Container)
+              // 2. SENDER PREVIEW (Draggable)
               if (_selectedFiles.isNotEmpty)
                 Positioned(
                   left: _dragPosition.dx,
@@ -207,7 +199,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   child: _buildDraggableContent(context), 
                 ),
 
-              // 3. RECEIVER RENDERER (The Unified Canvas)
+              // 3. RECEIVER RENDERER
               const SpatialRenderer(),
             ],
           ),
@@ -215,8 +207,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
-
-  // --- UI WIDGETS ---
 
   Widget _buildFab() {
     return Column(mainAxisAlignment: MainAxisAlignment.end, children: [
@@ -226,12 +216,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]);
   }
 
-  // FIXED: Sender Aspect Ratio Logic for PC
   Widget _buildDraggableContent(BuildContext context) {
     return Container(
       constraints: BoxConstraints(
-        maxWidth: MediaQuery.of(context).size.width * 0.6, // Cap at 60% width
-        maxHeight: MediaQuery.of(context).size.height * 0.6, // Cap at 60% height
+        maxWidth: MediaQuery.of(context).size.width * 0.6, 
+        maxHeight: MediaQuery.of(context).size.height * 0.6, 
         minWidth: 150,
         minHeight: 150
       ),
@@ -243,7 +232,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
       child: Stack(
         children: [
-          // 1. CONTENT
           ClipRRect(
             borderRadius: BorderRadius.circular(20),
             child: InteractiveViewer(
@@ -255,8 +243,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   : Image.file(_selectedFiles.first, fit: BoxFit.contain), 
             ),
           ),
-          
-          // 2. CLOSE BUTTON
           Positioned(
             top: 5, right: 5,
             child: GestureDetector(
@@ -268,8 +254,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
-
-          // 3. MANUAL SEND BUTTON
           Positioned(
             bottom: 10, right: 10,
             child: FloatingActionButton.small(
@@ -278,7 +262,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: const Icon(Icons.send, color: Colors.black),
             ),
           ),
-
           if (_selectedFiles.length > 1)
             Positioned(left: 10, top: 10, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFF00E676), borderRadius: BorderRadius.circular(10)), child: Text("+${_selectedFiles.length - 1}", style: const TextStyle(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 12))))
         ],
@@ -290,7 +273,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   
   Widget _buildGlassStatusCard(SocketService service) { 
     return GlassBox(
-      borderGlow: service.isConferenceMode, // Works now that getter is restored
+      borderGlow: service.isConferenceMode, 
       child: Column(
         children: [
           Row(
@@ -330,8 +313,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 }
 
-// --- GESTURE LAYER (Triggers the Physics) ---
-
 class SpatialGestureLayer extends StatefulWidget {
   final Widget child;
   final Function(DragUpdateDetails)? onDragUpdate;
@@ -355,16 +336,14 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
       onPointerMove: (event) {
         if (widget.onDragUpdate != null) widget.onDragUpdate!(DragUpdateDetails(globalPosition: event.position, delta: event.delta));
         
-        // Send Continuous Movement Data (For Ghost Hand)
         socketService.sendSwipeData({
             'x': event.position.dx / size.width, 
             'y': event.position.dy / size.height, 
             'isDragging': true, 
             'action': 'move',
-            ...widget.extraData // Sends 'fileType' so Ghost Hand knows what icon to show
+            ...widget.extraData 
         });
         
-        // Windows Mouse Teleport Logic
         if (Platform.isWindows) {
            if (event.position.dx < 5) {
               var left = socketService.activeDevices.firstWhere((d) => (d['x'] ?? 0) < 0, orElse: () => null);
@@ -385,15 +364,17 @@ class _SpatialGestureLayerState extends State<SpatialGestureLayer> {
         double vx = (dx / duration) * 1000;
         double vy = (dy / duration) * 1000;
 
-        // Send Release Event
         socketService.sendSwipeData({'isDragging': false, 'action': 'release', 'vx': vx, 'vy': vy, ...widget.extraData});
 
-        // CLIENT-SIDE TRIGGER LOGIC
-        bool isFast = vx.abs() > 100 || vy.abs() > 100; // Velocity Check
-        bool isFar = dx.abs() > (size.width * 0.2); // Distance Check (20% of screen)
+        bool isFast = vx.abs() > 100 || vy.abs() > 100; 
+        bool isFar = dx.abs() > (size.width * 0.2); 
 
         if (isFast || isFar) {
-            socketService.triggerSwipeTransfer(vx, vy);
+            // FIX: Haptic Feedback + Async Handling
+            HapticFeedback.mediumImpact();
+            socketService.triggerSwipeTransfer(vx, vy).catchError((e) {
+               print("Transfer Trigger Failed: $e");
+            });
         }
       },
       child: widget.child,
