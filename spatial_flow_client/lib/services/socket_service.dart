@@ -11,7 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:gal/gal.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
-import 'package:flutter_image_compress/flutter_image_compress.dart'; // IMPORT THIS
+import 'package:flutter_image_compress/flutter_image_compress.dart'; 
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -97,14 +97,17 @@ class SocketService with ChangeNotifier {
     if (_socket != null && _socket!.connected) _socket!.emit('remote_log', {'message': message});
   }
 
-  // --- FIX 1: ROBUST AUTO-CONNECT ---
+  // --- FIX 1: ACTIVE NEURAL DISCOVERY (SHOUT & LISTEN) ---
   void startDiscovery() async {
     _isScanning = true; notifyListeners();
-    log("Starting UDP Beacon Discovery...");
+    log("Initializing Neural Discovery...");
+
     try {
-      // reuseAddress: true is CRITICAL for Android to share the listening port
-      RawDatagramSocket.bind(InternetAddress.anyIPv4, 8888, reuseAddress: true, reusePort: true).then((socket) {
+      // Bind to ANY available port (0) to listen for the reply
+      RawDatagramSocket.bind(InternetAddress.anyIPv4, 0).then((socket) {
         socket.broadcastEnabled = true;
+
+        // 1. LISTEN FOR REPLY
         socket.listen((RawSocketEvent event) {
           if (event == RawSocketEvent.read) {
             Datagram? dg = socket.receive();
@@ -115,15 +118,27 @@ class SocketService with ChangeNotifier {
                 if (parts.length > 1) {
                   String serverIp = parts[1];
                   if (_socket == null || !_socket!.connected || !_socket!.io.uri.contains(serverIp)) {
-                     log("Beacon Found! Connecting to $serverIp");
-                     connectToSpecificIP(serverIp);
-                     socket.close(); 
+                      log("Neural Core Found at $serverIp");
+                      connectToSpecificIP(serverIp);
+                      socket.close(); 
                   }
                 }
               }
             }
           }
         });
+
+        // 2. SHOUT TO THE NETWORK (Active Discovery)
+        // Send "FIND_NEURAL_CORE" to Port 41234
+        String discoveryMsg = "FIND_NEURAL_CORE";
+        List<int> data = utf8.encode(discoveryMsg);
+        
+        try {
+           socket.send(data, InternetAddress("255.255.255.255"), 41234);
+           log("Shouting: FIND_NEURAL_CORE...");
+        } catch(e) {
+           log("Broadcast failed, checking backup...");
+        }
       });
     } catch (e) { log("UDP Error: $e"); }
   }
@@ -196,12 +211,15 @@ class SocketService with ChangeNotifier {
     });
   }
 
-  void triggerSwipeTransfer(double vx, double vy) {
+  Future<void> triggerSwipeTransfer(double vx, double vy) async {
     if (_stagedFiles.isEmpty) return;
     log("Triggering Transfer. Velocity: $vx");
     var target = _findTarget(vx);
-    if (target != null) _executeFileTransfer(target['id']); 
-    else log("No Target Found for Direction");
+    if (target != null) {
+        await _executeFileTransfer(target['id']); 
+    } else {
+        log("No Target Found for Direction");
+    }
   }
   
   dynamic _findTarget(double vx) {
@@ -215,15 +233,24 @@ class SocketService with ChangeNotifier {
      }, orElse: () => null);
   }
 
-  // --- FIX 2: HOLOGRAM COMPRESSION ---
+  // --- FIX 2: GREY SCREEN SAFETY NET ---
   Future<void> _executeFileTransfer(String targetId) async {
      _transferStatus = "SENDING...";
      notifyListeners();
+     
+     // Safety Timer: If transfer takes >10s, force reset UI
+     Timer safetyTimer = Timer(const Duration(seconds: 10), () {
+        if (_transferStatus == "SENDING...") {
+             _transferStatus = "ERROR (Timeout)";
+             notifyListeners();
+             Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
+        }
+     });
+
      try {
        for (var file in _stagedFiles) {
          Uint8List? thumbBytes;
          
-         // A. VIDEO THUMBNAIL
          if (_stagedFileType == 'video') {
             try { 
               thumbBytes = await VideoThumbnail.thumbnailData(
@@ -231,21 +258,14 @@ class SocketService with ChangeNotifier {
               ); 
             } catch(e) {}
          } 
-         // B. IMAGE THUMBNAIL (COMPRESSED)
          else if (_stagedFileType == 'image') {
             try {
               thumbBytes = await FlutterImageCompress.compressWithFile(
-                file.path,
-                minWidth: 300,
-                minHeight: 300,
-                quality: 50, // Reduce quality to 50% for fast hologram
+                file.path, minWidth: 300, minHeight: 300, quality: 50,
               );
             } catch (e) { log("Image Compress Error: $e"); }
-            
-            // Fallback if compression fails
             if (thumbBytes == null) thumbBytes = await file.readAsBytes();
          } 
-         // C. GENERIC FILE
          else { 
             thumbBytes = await file.readAsBytes(); 
          }
@@ -274,8 +294,16 @@ class SocketService with ChangeNotifier {
        }
        _transferStatus = "SENT";
        notifyListeners();
+       
+       safetyTimer.cancel(); // Cancel safety timer on success
+
        Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
-     } catch (e) { log("Transfer Error: $e"); _transferStatus = "ERROR"; notifyListeners(); }
+     } catch (e) { 
+        log("Transfer Error: $e"); 
+        _transferStatus = "ERROR"; 
+        notifyListeners(); 
+        safetyTimer.cancel();
+     }
   }
 
   void _registerDevice() async {
