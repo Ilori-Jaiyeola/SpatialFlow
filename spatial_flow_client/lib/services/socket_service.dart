@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:open_filex/open_filex.dart'; // <--- ENSURE THIS IS HERE
 import 'package:gal/gal.dart';
 import 'package:video_thumbnail/video_thumbnail.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart'; 
@@ -40,7 +41,7 @@ class SocketService with ChangeNotifier {
   List<File> _stagedFiles = []; 
   String _stagedFileType = 'file';
 
-  // GETTERS
+  // --- GETTERS (FIXED) ---
   bool get isConnected => _isConnected;
   bool get isScanning => _isScanning;
   bool get isConferenceMode => _isConferenceMode;
@@ -55,6 +56,8 @@ class SocketService with ChangeNotifier {
   Offset get virtualMousePos => _virtualMousePos;
   bool get showVirtualCursor => _showVirtualCursor;
   Map<String, dynamic>? get incomingSwipeData => _incomingSwipeData;
+  // THIS WAS MISSING:
+  String? get incomingSenderId => _incomingSenderId;
 
   SocketService() { _initBackgroundService(); }
 
@@ -96,17 +99,15 @@ class SocketService with ChangeNotifier {
     if (_socket != null && _socket!.connected) _socket!.emit('remote_log', {'message': message});
   }
 
-  // --- 1. ACTIVE DISCOVERY (THE FIX) ---
+  // --- 1. ACTIVE DISCOVERY ---
   void startDiscovery() async {
     _isScanning = true; notifyListeners();
     log("Initializing Neural Discovery...");
 
     try {
-      // Bind to ANY available port (0) to listen for the reply
       RawDatagramSocket.bind(InternetAddress.anyIPv4, 0).then((socket) {
         socket.broadcastEnabled = true;
 
-        // A. LISTEN FOR REPLY
         socket.listen((RawSocketEvent event) {
           if (event == RawSocketEvent.read) {
             Datagram? dg = socket.receive();
@@ -127,11 +128,9 @@ class SocketService with ChangeNotifier {
           }
         });
 
-        // B. SHOUT TO THE NETWORK
         String discoveryMsg = "FIND_NEURAL_CORE";
         List<int> data = utf8.encode(discoveryMsg);
         try {
-           // Send to Port 41234 (Defined in Server)
            socket.send(data, InternetAddress("255.255.255.255"), 41234);
            log("Shouting: FIND_NEURAL_CORE...");
         } catch(e) {
@@ -212,10 +211,7 @@ class SocketService with ChangeNotifier {
   // --- 2. TRIGGER LOGIC ---
   Future<void> triggerSwipeTransfer(double vx, double vy) async {
     if (_stagedFiles.isEmpty) return;
-    
-    // Use Smart Logic to find the NEAREST neighbor in that direction
     var target = _findTarget(vx, vy); 
-    
     if (target != null) {
         log("Target Locked: ${target['name']} (Pos: ${target['x']})");
         await _executeFileTransfer(target['id']); 
@@ -231,19 +227,14 @@ class SocketService with ChangeNotifier {
      
      int myX = me['x'] ?? 0;
 
-     // Filter candidates strictly by direction
      var candidates = _activeDevices.where((d) {
         if (d['id'] == _myId) return false;
         int tX = d['x'] ?? 0;
-        
-        // Swipe Right (vx > 0) -> Target > Me
-        // Swipe Left (vx < 0) -> Target < Me
         return (vx > 0 && tX > myX) || (vx < 0 && tX < myX);
      }).toList();
 
      if (candidates.isEmpty) return null;
 
-     // Sort by DISTANCE (Nearest Neighbor) to support Conference Mode
      candidates.sort((a, b) {
         int distA = ((a['x'] ?? 0) - myX).abs();
         int distB = ((b['x'] ?? 0) - myX).abs();
@@ -253,12 +244,11 @@ class SocketService with ChangeNotifier {
      return candidates.first;
   }
 
-  // --- 4. EXECUTE TRANSFER (With Safety Timer) ---
+  // --- 4. EXECUTE TRANSFER ---
   Future<void> _executeFileTransfer(String targetId) async {
      _transferStatus = "SENDING...";
      notifyListeners();
      
-     // Failsafe: Reset UI if transfer hangs > 10s
      Timer safetyTimer = Timer(const Duration(seconds: 10), () {
         if (_transferStatus == "SENDING...") {
              _transferStatus = "TIMEOUT";
@@ -299,7 +289,6 @@ class SocketService with ChangeNotifier {
             });
          }
 
-         // SEND ACTUAL FILE
          List<int> bytes = await file.readAsBytes();
          _socket!.emit('file_payload', { 
            'targetId': targetId, 
@@ -313,8 +302,7 @@ class SocketService with ChangeNotifier {
        }
        _transferStatus = "SENT";
        notifyListeners();
-       
-       safetyTimer.cancel(); // Success!
+       safetyTimer.cancel(); 
 
        Future.delayed(const Duration(seconds: 2), () { _transferStatus = "IDLE"; notifyListeners(); });
      } catch (e) { 
